@@ -1,7 +1,7 @@
-import { useEffect, useRef, useReducer, useState, useCallback, useMemo, type MouseEvent } from "react";
+import { useEffect, useRef, useReducer, useState, useCallback, type MouseEvent } from "react";
 import {
   C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, WEAPONS, POTION_COLORS, POTION_EFFECTS, RULES_VERSION,
-  idx, inB, say, totalAtk, totalDef, newRun, startStats, freshMeta, dailySeed, dailyClass, applyAction, stepAction,
+  idx, inB, say, totalAtk, totalDef, newRun, freshMeta, applyAction, stepAction,
   canReach, reachOf, bfsPath, potionLabel, relicLabel, relicBlurb, scoreOf, mergeDex,
   type Game, type Meta, type Upgrade, type Flash, type RunMode,
 } from "./game/core";
@@ -9,13 +9,13 @@ import { drawMap, playerSprite, potionSprite, relicSprite, spriteCanvas, type Gh
 import { zoneOf, zoneIndex } from "./game/zones";
 import {
   loadMeta, saveMeta, loadRun, saveRun, clearRun, loadActive, requestPersist, isStandalone, isIOS,
-  exportCode, importCode, loadProfile, saveProfile, loadRecords, addRecord, loadFriends, addFriendRun, removeFriendRun,
+  exportCode, importCode, loadProfile, saveProfile,
 } from "./game/storage";
 import {
-  makeRecord, buildGhost, ghostAt, encodeRecord, decodeRecord, todayUTC, prettyDay,
-  type Ghost, type Profile, type RunRecord,
+  makeRecord, ghostAt, encodeRecord, todayUTC, prettyDay,
+  type Ghost, type Profile, type RunRecord, type LeaderboardEntry,
 } from "./game/replay";
-import { randomSeed } from "./game/rng";
+import { LocalGameService, type GameService, type StartedRun } from "./game/service";
 import { TIER_NAMES, type RelicId } from "./game/relics";
 import { CLASSES, CLASS_IDS, isUnlocked, classOf, type ClassId } from "./game/classes";
 import { ACHIEVEMENTS, combinedDex, newlyEarned } from "./game/bestiary";
@@ -24,9 +24,12 @@ import { DailyCard } from "./ui/Daily";
 import { Collection } from "./ui/Collection";
 import { PauseMenu } from "./ui/PauseMenu";
 
-/* a run's id is derived from its seed and start time, so an in-progress share
-   and the finished run share an id and the newer one replaces the older */
-const runId = (g: Game) => `${g.mode}-${g.seed.toString(36)}-${g.startedAt.toString(36)}`;
+/* where dailies, leaderboards and ghosts come from: this phone for now, a server later */
+const service: GameService = new LocalGameService();
+
+const runFrom = (r: StartedRun) => newRun({
+  id: r.runId, mode: r.mode, seed: r.seed, day: r.day, start: r.start, ranked: r.ranked, startedAt: r.startedAt,
+});
 
 /* ============================ potion tray ============================ */
 
@@ -231,8 +234,8 @@ export default function LampblackDepths() {
   const metaRef = useRef(meta);
   const setMeta = (m: Meta) => { metaRef.current = m; setMetaState(m); saveMeta(m); };
   const [profile, setProfileState] = useState<Profile>(loadProfile);
-  const [records, setRecords] = useState<RunRecord[]>(loadRecords);
-  const [friends, setFriends] = useState<RunRecord[]>(loadFriends);
+  const [board, setBoard] = useState<LeaderboardEntry[]>([]);
+  const [ghostsByDay, setGhostsByDay] = useState<Record<string, Ghost[]>>({});
   const [flashes, setFlashes] = useState<Record<number, string>>({});
   const [ts, setTs] = useState(30);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -249,23 +252,25 @@ export default function LampblackDepths() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const walkTimer = useRef<number | undefined>(undefined);
   const flashTimer = useRef<Record<number, number>>({});
-  const ghostCache = useRef(new Map<string, Ghost>());
 
   const today = todayUTC(now);
 
   /* ---------------- ghosts ---------------- */
 
-  const ghostsFor = useCallback((day: string | null) => {
-    if (!day) return [];
-    return friends.filter(r => r.mode === "daily" && r.day === day).map(r => {
-      const key = `${r.id}|${r.actions.length}`;
-      let gh = ghostCache.current.get(key);
-      if (!gh) { gh = buildGhost(r); ghostCache.current.set(key, gh); }
-      return gh;
-    });
-  }, [friends]);
+  const ghostsFor = useCallback((day: string | null) => (day ? ghostsByDay[day] ?? [] : []), [ghostsByDay]);
 
-  const todaysGhosts = useMemo(() => ghostsFor(today), [ghostsFor, today]);
+  /* fetch a day's scoreboard and ghosts from the service */
+  const refreshDaily = useCallback(async (day: string) => {
+    const [b, gh] = await Promise.all([service.getLeaderboard(day), service.getGhosts(day)]);
+    if (day === todayUTC()) setBoard(b);
+    setGhostsByDay(prev => ({ ...prev, [day]: gh }));
+  }, []);
+
+  useEffect(() => { refreshDaily(today); }, [today, refreshDaily]);
+
+  /* a daily from an earlier day still needs that day's ghosts */
+  const liveDay = G.current?.mode === "daily" ? G.current.day : null;
+  useEffect(() => { if (liveDay && !ghostsByDay[liveDay]) refreshDaily(liveDay); }, [liveDay, ghostsByDay, refreshDaily]);
 
   /* ---------------- storage ---------------- */
 
@@ -299,8 +304,7 @@ export default function LampblackDepths() {
     const earned = newlyEarned(m);
     setMeta(earned.length ? { ...m, ach: [...m.ach, ...earned] } : m);
     setProfileState(loadProfile());
-    setRecords(loadRecords());
-    setFriends(loadFriends());
+    refreshDaily(todayUTC());
     runs.current = { free: loadRun("free"), daily: loadRun("daily") };
     const active = loadActive();
     G.current = runs.current[active] ?? runs.current.free ?? runs.current.daily;
@@ -400,7 +404,7 @@ export default function LampblackDepths() {
     const feats = newlyEarned(nm);
     nm = { ...nm, ach: [...nm.ach, ...feats] };
     setMeta(nm);
-    if (g.replayable) setRecords(addRecord(makeRecord(g, runId(g), loadProfile(), __APP_VERSION__, true)));
+    if (g.replayable) service.submitRun(makeRecord(g, loadProfile(), __APP_VERSION__, true)).then(() => refreshDaily(todayUTC()));
     setSummary({
       mode: g.mode, day: g.day, depth: g.depth, kills: g.kills, earned, level: g.level,
       score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned, unlocked, feats,
@@ -410,7 +414,7 @@ export default function LampblackDepths() {
     if (G.current === g) G.current = null;
     setPaused(false);
     setScreen("death");
-  }, []);
+  }, [refreshDaily]);
 
   /* the single way the player changes the game: every legal action is logged for replays */
   const doAction = useCallback((a: string) => {
@@ -474,7 +478,7 @@ export default function LampblackDepths() {
   useEffect(() => {
     const g = G.current;
     if (screen !== "game" || !g) return;
-    const key = `${runId(g)}:${zoneIndex(g.depth)}`;
+    const key = `${g.id}:${zoneIndex(g.depth)}`;
     if (lastZone.current === key) return;
     lastZone.current = key;
     const z = zoneOf(g.depth);
@@ -498,23 +502,17 @@ export default function LampblackDepths() {
     setScreen("game");
   };
 
-  const startFree = () => {
+  const startFree = async () => {
     if (runs.current.free && !confirm("Abandon this run? Echoes from it will be lost.")) return;
-    enter(newRun({
-      mode: "free", seed: randomSeed(), day: null, ranked: false, startedAt: Date.now(),
-      start: startStats(metaRef.current, isUnlocked(metaRef.current.cls, metaRef.current) ? metaRef.current.cls : "wanderer"),
-    }));
+    enter(runFrom(await service.startRun({ mode: "free", meta: metaRef.current, cls: metaRef.current.cls })));
   };
 
-  const playDaily = () => {
+  const playDaily = async () => {
     const live = runs.current.daily;
     if (live) { enter(live); return; }
-    const day = todayUTC();
-    const ranked = !records.some(r => r.mode === "daily" && r.day === day);
-    enter(newRun({
-      // dailies always use a fresh profile: no echo upgrades, today's hero
-      mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta(), dailyClass(day)), ranked, startedAt: Date.now(),
-    }));
+    // the service decides the seed, today's hero (no upgrades) and whether this attempt is ranked
+    const daily = await service.getDailyDungeon();
+    enter(runFrom(await service.startRun({ mode: "daily", daily })));
   };
 
   const giveUpDaily = () => {
@@ -537,29 +535,18 @@ export default function LampblackDepths() {
     const live = runs.current.daily;
     const named = { ...profile, name: profile.name.trim() };
     let rec: RunRecord | null = null;
-    if (live && live.day === today && live.replayable) rec = makeRecord(live, runId(live), named, __APP_VERSION__, false);
+    if (live && live.day === today && live.replayable) rec = makeRecord(live, named, __APP_VERSION__, false);
     else {
-      const mine = records.filter(r => r.mode === "daily" && r.day === today);
-      const pickRec = mine.find(r => r.ranked) ?? mine[mine.length - 1];
-      if (pickRec) rec = { ...pickRec, player: named };
+      const mine = await service.getMyRun(today);
+      if (mine) rec = { ...mine, player: named };
     }
     return rec ? encodeRecord(rec) : null;
   };
 
   const addFriend = async (code: string): Promise<string> => {
-    let rec: RunRecord;
-    try { rec = await decodeRecord(code); }
-    catch (e) { return e instanceof Error ? e.message : "That code didn't work."; }
-    if (rec.player.id === profile.id) return "That's your own run!";
-    if (rec.mode !== "daily") return "Only daily dungeon runs can be shared.";
-    if (rec.rules !== RULES_VERSION) return "That run is from a different version of the game. Both of you should update (reopen the app), then share again.";
-    const gh = buildGhost(rec);
-    ghostCache.current.set(`${rec.id}|${rec.actions.length}`, gh);
-    setFriends(addFriendRun(rec));
-    const when = rec.day === today ? "today" : prettyDay(rec.day ?? today);
-    return gh.verified
-      ? `Added ${rec.player.name || "your friend"}'s run from ${when}: ${rec.result.score} points. Verified ✓`
-      : `Added ${rec.player.name || "your friend"}'s run, but its replay didn't match its score, so treat it with suspicion.`;
+    const r = await service.importRun(code, profile);
+    if (r.ok) await refreshDaily(today);
+    return r.message;
   };
 
   /* ---------------- upgrades ---------------- */
@@ -622,15 +609,15 @@ export default function LampblackDepths() {
             <DailyCard
               day={today} now={now}
               live={runs.current.daily}
-              mine={records.filter(r => r.mode === "daily" && r.day === today)}
-              ghosts={todaysGhosts}
+              board={board}
+              myId={profile.id}
               name={profile.name}
               onName={setName}
               onPlay={playDaily}
               onGiveUp={giveUpDaily}
               onShare={shareDaily}
               onAdd={addFriend}
-              onRemoveFriend={id => setFriends(removeFriendRun(id))}
+              onRemoveFriend={async id => { await service.removeRun(id); refreshDaily(today); }}
             />
 
             <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Your own descent</h2>

@@ -216,6 +216,7 @@ export type StartStats = {
 
 export type Game = {
   /* identity: with these and `actions`, the whole run can be replayed */
+  id: string;          // unique run id (from the game service; a server would issue it)
   mode: RunMode; day: string | null; seed: number; start: StartStats;
   startedAt: number; ranked: boolean;
   actions: string[]; replayable: boolean;
@@ -602,8 +603,12 @@ export const dailySeed = (day: string) => hashStr(`daily:${day}:rules${RULES_VER
 const floorRng = (seed: number, floorKey: string) => new Rng(hashStr(`${seed}:floor:${floorKey}`));
 
 export type RunSetup = {
+  id?: string;
   mode: RunMode; seed: number; day: string | null; start: StartStats; ranked: boolean; startedAt: number;
 };
+
+/* runs from before ids were stored got one derived from their seed and start time */
+export const legacyRunId = (mode: RunMode, seed: number, startedAt: number) => `${mode}-${seed.toString(36)}-${startedAt.toString(36)}`;
 
 export function newRun(s: RunSetup): Game {
   const floorKey = "1s";
@@ -612,6 +617,7 @@ export function newRun(s: RunSetup): Game {
   const pop = populate(lvl, 1, floorKey, fr);
   const pr = new Rng(hashStr(`${s.seed}:potions`));
   const g: Game = {
+    id: s.id ?? legacyRunId(s.mode, s.seed, s.startedAt),
     mode: s.mode, day: s.day, seed: s.seed, start: s.start, startedAt: s.startedAt, ranked: s.ranked,
     actions: [], replayable: true,
     rng: new Rng(hashStr(`${s.seed}:run`)),
@@ -1357,6 +1363,7 @@ export type SavedRun = {
   cc?: [number, number];
   // v4: bosses and the bestiary
   wb?: number; mk?: [number, number][]; dx?: Dex;
+  id?: string;
 };
 
 const itemNum = (i: Item) =>
@@ -1393,6 +1400,7 @@ export function serializeRun(g: Game): SavedRun {
     rl: { ...g.relics }, hz: g.hazards.map(h => [h.x, h.y, h.dmg, h.turns]), ks: g.killsSinceEmber, pr: g.perils,
     cc: [g.wardens, g.chests],
     wb: g.webbed, mk: g.marks.map(([x, y]) => [x, y]), dx: g.dex,
+    id: g.id,
   };
 }
 
@@ -1404,6 +1412,7 @@ export function deserializeRun(o: SavedRun): Game {
   const seed = o.sd ?? hashStr(`legacy:${o.G}`);
   const pr = new Rng(hashStr(`${seed}:potions`));
   const g: Game = {
+    id: o.id ?? legacyRunId(o.md ?? "free", seed, o.sa ?? 0),
     mode: o.md ?? "free", day: o.dy ?? null, seed,
     start: normalizeStart(o.st ?? { maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4], tonics: 0, greed: o.e[1] }),
     startedAt: o.sa ?? Date.now(), ranked: o.rk === 1,

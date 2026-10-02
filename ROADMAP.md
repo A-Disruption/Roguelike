@@ -45,7 +45,19 @@ Tick things off as they ship. Ideas can move between sections or be crossed out 
 - [x] **New monster tricks** — goblin archers shoot from range, slimes split when hit, ghosts drift through walls
 - [x] **Traps** — hidden spikes, pits that drop you a floor, alarm plates that wake the whole floor; you can spot them when close
 
+## Done — v1.5.1 "Backend-ready data"
+
+- [x] **Tamper-proof verification** — dailies must use the official seed and today's hero; illegal or truncated moves, inflated scores and other rules versions are rejected
+- [x] **GameService interface** — the UI no longer touches storage for dailies, runs, leaderboards or ghosts; `LocalGameService` today, a cloud one later
+- [x] **Daily dungeon comes from the service** (`{ id, seed, rulesVersion, hero, expiresAt }`), ready for a server-held secret seed
+- [x] **Real run ids** issued at run start (what a server's run token will be)
+- [x] **Leaderboard rows vs ghost files** — `splitRecord()`; speed ranked by verifiable turns, not wall-clock time
+- [x] **`npm run verify`** — checks a share code exactly as a server would
+
 ## Next up — online play (needs a small backend)
+
+Plan from the ChatGPT discussion: GitHub Pages (game) + Cloudflare Worker (API) + D1 (users, daily_dungeons, runs, leaderboard) + R2 (best ghost per player per day). Expected cost: $0 at family scale, ~$5/month at thousands of daily players.
+
 
 The client side is already shaped for this: `RunRecord` in `src/game/replay.ts` is what gets uploaded, and the server re-runs `replayRecord` to compute the score itself instead of trusting the phone.
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { C, dailyClass, type Game } from "../game/core";
 import { CLASSES } from "../game/classes";
-import { resultOf, prettyDay, formatCountdown, msUntilNextDay, type Ghost, type RunRecord } from "../game/replay";
+import { resultOf, prettyDay, formatCountdown, msUntilNextDay, type LeaderboardEntry } from "../game/replay";
 import { btn, act3, linkBtn, textArea, sectionTitle, SpriteIcon } from "./bits";
 
 /* The daily dungeon card on the main screen: play button, countdown,
@@ -15,8 +15,8 @@ type BoardRow = {
 export function DailyCard(props: {
   day: string; now: number;
   live: Game | null;                 // my daily run in progress, any day
-  mine: RunRecord[];                 // my finished daily runs today
-  ghosts: Ghost[];                   // friends' runs today, replayed
+  board: LeaderboardEntry[];         // today's runs (yours and friends'), best first
+  myId: string;
   name: string;
   onName: (name: string) => void;
   onPlay: () => void;
@@ -25,7 +25,7 @@ export function DailyCard(props: {
   onAdd: (code: string) => Promise<string>;
   onRemoveFriend: (id: string) => void;
 }) {
-  const { day, now, live, mine, ghosts, name } = props;
+  const { day, now, live, board, myId, name } = props;
   const [panel, setPanel] = useState<"none" | "share" | "add">("none");
   const [code, setCode] = useState("");
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
@@ -33,23 +33,22 @@ export function DailyCard(props: {
 
   const liveToday = live && live.day === day ? live : null;
   const staleLive = live && live.day !== day ? live : null;
-  const playedToday = mine.length > 0 || !!liveToday;
+  const playedToday = board.some(e => e.player.id === myId) || !!liveToday;
 
   const rows: BoardRow[] = [
-    ...mine.map(r => ({
-      key: r.id, name: name || "you", score: r.result.score, depth: r.result.depth, me: true,
-      tag: (r.ranked ? "first try" : "practice") as BoardRow["tag"], died: r.result.died, verified: null,
-    })),
+    ...board.map(e => {
+      const me = e.player.id === myId;
+      return {
+        key: e.runId, name: me ? name || "you" : e.player.name || "friend", score: e.score, depth: e.depth, me,
+        friendId: me ? undefined : e.runId,
+        tag: (e.finished ? (e.ranked ? "first try" : "practice") : "playing") as BoardRow["tag"],
+        died: e.died, verified: me ? null : e.verified,
+      };
+    }),
     ...(liveToday ? [{
       key: "live", name: name || "you", score: resultOf(liveToday).score, depth: liveToday.depth, me: true,
       tag: "playing" as const, died: false, verified: null,
     }] : []),
-    ...ghosts.map(gh => ({
-      key: gh.rec.id, name: gh.rec.player.name || "friend", score: gh.rec.result.score, depth: gh.rec.result.depth,
-      me: false, friendId: gh.rec.id,
-      tag: (gh.rec.finishedAt ? (gh.rec.ranked ? "first try" : "practice") : "playing") as BoardRow["tag"],
-      died: gh.rec.result.died, verified: gh.verified,
-    })),
   ].sort((a, b) => b.score - a.score);
 
   const share = async () => {

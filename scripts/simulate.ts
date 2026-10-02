@@ -8,7 +8,10 @@ import {
   computeFov, sightOf, cheb,
   type Game, type RunSetup,
 } from "../src/game/core.ts";
-import { makeRecord, replayRecord, resultOf, sameResult, buildGhost, encodeRecord, decodeRecord } from "../src/game/replay.ts";
+import {
+  makeRecord, replayRecord, resultOf, sameResult, buildGhost, encodeRecord, decodeRecord, dailyExpectation, verifyRecord,
+  splitRecord, byRank, type RunRecord,
+} from "../src/game/replay.ts";
 import { RELIC_IDS } from "../src/game/relics.ts";
 import { CLASS_IDS, CLASSES, isUnlocked } from "../src/game/classes.ts";
 import { ZONES, zoneIndex, zoneOf, isBossFloor, bossFor } from "../src/game/zones.ts";
@@ -131,7 +134,7 @@ async function playOne(setup: RunSetup, boosted: boolean, maxActions = 2500, pic
   stats.relicsFound += Object.keys(g.relics).length;
 
   if (replaySetup) {
-    const rec = makeRecord(g, "test", { id: "p", name: "Tester" }, "test", g.dead);
+    const rec = makeRecord(g, { id: "p", name: "Tester" }, "test", g.dead);
     let step = 0, firstBad = -1;
     const again = replayRecord(rec, gg => { if (firstBad < 0 && fp(gg) !== prints[step]) firstBad = step; step++; });
     if (firstBad >= 0) {
@@ -146,7 +149,8 @@ async function playOne(setup: RunSetup, boosted: boolean, maxActions = 2500, pic
     if (a !== b) { const A = JSON.parse(a), B = JSON.parse(b); const diff = Object.keys(A).filter(k => JSON.stringify(A[k]) !== JSON.stringify(B[k])); throw new Error(`replayed state differs (${g.start.cls}, ${g.mode}): ${diff.map(k => `${k}: ${JSON.stringify(A[k]).slice(0, 120)} vs ${JSON.stringify(B[k]).slice(0, 120)}`).join(" | ")}`); }
     // round-trip through a share code
     const back = await decodeRecord("Look at this!\n" + await encodeRecord(rec));
-    if (!buildGhost(back).verified) throw new Error("share code did not verify");
+    const gh = buildGhost(back, back.mode === "daily" && back.day ? dailyExpectation(back.day) : null);
+    if (!gh.verified) throw new Error(`share code did not verify: ${gh.reason}`);
   }
 }
 
@@ -428,6 +432,111 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
   if (!isUnlocked("ranger", { ...p0, best: 4 }) || !isUnlocked("mage", { ...p0, kills: 40 })
       || !isUnlocked("knight", { ...p0, wardens: 1 }) || !isUnlocked("rogue", { ...p0, chests: 8 })) throw new Error("unlock rules wrong");
   if (Object.values(CLASSES).some(c => c.unlock && c.unlock.progress(p0).length === 0)) throw new Error("missing progress text");
+}
+
+// verification refuses doctored daily runs, and accepts honest ones
+{
+  const day = "2026-10-05";
+  const g = newRun({ id: "honest", mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta(), dailyClass(day)), ranked: true, startedAt: 1 });
+  for (let i = 0; i < 400 && !g.dead; i++) applyAction(g, randomAction(g), noFlash);
+  const honest = makeRecord(g, { id: "dad", name: "Dad" }, "test", true);
+  const expect = dailyExpectation(day);
+  const check = (rec: RunRecord) => verifyRecord(rec, expect);
+  if (!check(honest).ok) throw new Error("honest daily run was rejected");
+  const reject = (label: string, rec: RunRecord) => {
+    const v = check(rec);
+    if (v.ok) throw new Error(`tampered run accepted: ${label}`);
+  };
+  // a god-mode hero, replayed honestly so its own claimed score would match
+  {
+    const start = { ...honest.start, maxHp: 9999, atk: 99 };
+    const cheat = newRun({ id: "cheat", mode: "daily", seed: dailySeed(day), day, start, ranked: true, startedAt: 1 });
+    for (const a of honest.actions.split(",")) applyAction(cheat, a, noFlash);
+    const rec = makeRecord(cheat, { id: "x", name: "Cheater" }, "test", true);
+    if (!verifyRecord(rec, null).ok) throw new Error("self-consistent cheat should pass a plain replay");
+    reject("boosted starting hero", rec);
+  }
+  // an easier dungeon: a different seed, again internally consistent
+  {
+    const easy = newRun({ id: "easy", mode: "daily", seed: 12345, day, start: honest.start, ranked: true, startedAt: 1 });
+    for (let i = 0; i < 200 && !easy.dead; i++) applyAction(easy, randomAction(easy), noFlash);
+    reject("wrong seed", makeRecord(easy, { id: "x", name: "Cheater" }, "test", true));
+  }
+  reject("inflated score", { ...honest, result: { ...honest.result, score: honest.result.score + 500 } });
+  reject("an illegal move slipped in", { ...honest, actions: honest.actions + ",m9" });
+  reject("moves cut short", { ...honest, actions: honest.actions.split(",").slice(0, -20).join(",") });
+  reject("another rules version", { ...honest, rules: honest.rules - 1 });
+  reject("another hero", { ...honest, start: startStats(freshMeta(), dailyClass(day) === "knight" ? "rogue" : "knight") });
+
+  // the leaderboard row and the ghost file carry everything the record did
+  const { entry, ghost } = splitRecord(honest, true);
+  if (entry.runId !== honest.id || entry.score !== honest.result.score || entry.turns !== honest.result.turns || !entry.verified)
+    throw new Error("leaderboard entry lost data");
+  const rebuilt: RunRecord = { ...honest, seed: ghost.seed, start: ghost.start, actions: ghost.actions };
+  if (!check(rebuilt).ok) throw new Error("ghost file can't rebuild the run");
+  // ranking: score first, then fewer turns
+  const a = { ...entry, score: 100, turns: 50 }, b = { ...entry, score: 100, turns: 40 }, c = { ...entry, score: 120, turns: 90 };
+  if ([a, b, c].sort(byRank).map(e => e.turns).join() !== "90,40,50") throw new Error("leaderboard order wrong");
+}
+
+// the local game service, end to end, on a stand-in for the phone's storage
+{
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: Storage }).localStorage = {
+    getItem: k => mem.get(k) ?? null, setItem: (k, v) => { mem.set(k, String(v)); }, removeItem: k => { mem.delete(k); },
+    clear: () => mem.clear(), key: i => [...mem.keys()][i] ?? null, get length() { return mem.size; },
+  };
+  const { LocalGameService } = await import("../src/game/service.ts");
+  const svc = new LocalGameService();
+  const now = Date.UTC(2026, 9, 6, 15, 0, 0);
+  const daily = await svc.getDailyDungeon(now);
+  if (daily.id !== "2026-10-06" || daily.seed !== dailySeed("2026-10-06") || daily.hero !== dailyClass("2026-10-06"))
+    throw new Error("daily dungeon wrong");
+  if (daily.expiresAt !== "2026-10-07T00:00:00.000Z") throw new Error(`daily expires at ${daily.expiresAt}`);
+
+  const play = async (player: { id: string; name: string }, steps: number) => {
+    const r = await svc.startRun({ mode: "daily", daily });
+    const g = newRun({ id: r.runId, mode: r.mode, seed: r.seed, day: r.day, start: r.start, ranked: r.ranked, startedAt: r.startedAt });
+    for (let i = 0; i < steps && !g.dead; i++) applyAction(g, randomAction(g), noFlash);
+    return { r, rec: makeRecord(g, player, "test", true) };
+  };
+  const first = await play({ id: "me", name: "Kid" }, 300);
+  if (!first.r.ranked) throw new Error("first daily attempt should be ranked");
+  const sub = await svc.submitRun(first.rec);
+  if (!sub.verified) throw new Error(`own run failed verification: ${sub.reason}`);
+  const second = await svc.startRun({ mode: "daily", daily });
+  if (second.ranked) throw new Error("second attempt should be practice");
+  if (second.runId === first.r.runId) throw new Error("run ids must be unique");
+  if ((await svc.getMyRun(daily.id))?.id !== first.rec.id) throw new Error("getMyRun should return the first try");
+
+  // a friend's run arrives as a share code
+  const friend = await play({ id: "dad", name: "Dad" }, 500);
+  const code = await encodeRecord(friend.rec);
+  const added = await svc.importRun(code, { id: "me", name: "Kid" });
+  if (!added.ok) throw new Error(`friend import failed: ${added.message}`);
+  if (!(await svc.importRun(code, { id: "dad", name: "Dad" })).message.includes("own run")) throw new Error("own-run check missing");
+  const doctored = await encodeRecord({ ...friend.rec, id: "doctored", start: { ...friend.rec.start, maxHp: 9999 } });
+  if ((await svc.importRun(doctored, { id: "me", name: "Kid" })).ok) throw new Error("doctored friend run was accepted");
+
+  const lb = await svc.getLeaderboard(daily.id);
+  if (lb.length !== 2 || !lb.some(e => e.player.name === "Dad" && e.verified) || lb.some(e => e.runId === "doctored"))
+    throw new Error(`leaderboard wrong: ${JSON.stringify(lb.map(e => [e.player.name, e.score, e.verified]))}`);
+  if (lb[0].score < lb[1].score) throw new Error("leaderboard not sorted");
+  const ghosts = await svc.getGhosts(daily.id);
+  if (ghosts.length !== 1 || ghosts[0].rec.player.name !== "Dad") throw new Error("ghosts wrong");
+  await svc.removeRun(friend.rec.id);
+  if ((await svc.getGhosts(daily.id)).length !== 0) throw new Error("removed run still a ghost");
+
+  // free runs: the hero must be unlocked, and upgrades apply
+  const locked = await svc.startRun({ mode: "free", meta: { ...freshMeta(), cls: "knight" }, cls: "knight" });
+  if (locked.start.cls !== "wanderer") throw new Error("locked hero was allowed");
+  const strong = await svc.startRun({ mode: "free", meta: { ...freshMeta(), up: { vigor: 10 } }, cls: "wanderer" });
+  if (strong.start.maxHp !== 32 + 70 || strong.ranked) throw new Error("free run start wrong");
+
+  // a run saved by v1.5 (no stored id) keeps the id it always had
+  const old = newRun({ mode: "daily", seed: 9, day: "2026-10-01", start: startStats(freshMeta(), "wanderer"), ranked: true, startedAt: 1234 });
+  const saved = { ...serializeRun(old), id: undefined };
+  if (deserializeRun(JSON.parse(JSON.stringify(saved))).id !== old.id) throw new Error("legacy run id changed");
 }
 
 console.log("ok", JSON.stringify(stats));

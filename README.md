@@ -17,7 +17,9 @@ on the device after every move, and it works offline.
 | `src/game/mapgen.ts` | Level generator: rooms / halls / caverns layouts, decorations, connectivity |
 | `src/game/tiles.ts` | Map size and tile types shared by rules and generator |
 | `src/game/bestiary.ts` | Bestiary text, zone notes, achievements |
-| `src/game/replay.ts` | Run records, replay/verification, ghosts, share codes, daily calendar |
+| `src/game/replay.ts` | Run records, replay + tamper-proof verification, leaderboard rows / ghost files, share codes, daily calendar |
+| `src/game/service.ts` | `GameService` interface (daily dungeon, start/submit runs, leaderboard, ghosts) and `LocalGameService` |
+| `scripts/verify-run.ts` | Verify a share code like a server would (`npm run verify -- "LAMPRUN1Z:..."`) |
 | `src/game/sprites.ts` | 8×8 pixel-art sprites and map drawing |
 | `src/game/storage.ts` | Saving to the device, backup codes |
 | `src/App.tsx` | Screens and controls |
@@ -66,3 +68,12 @@ version the next time the app is opened (sometimes it takes a second launch).
 - **Share my run** makes a compressed `LAMPRUN1Z:` code. **Add a friend's run** replays it on your device, marks it
   verified if the replay matches its score, adds it to the scoreboard and shows it as a ghost.
 - If you change gameplay rules, bump `RULES_VERSION` — runs from different versions don't mix.
+
+## Getting ready for a backend
+
+The UI only talks to `GameService` (`src/game/service.ts`). `LocalGameService` keeps everything on the phone; a
+future `CloudGameService` (Cloudflare Worker + D1 for leaderboard rows + R2 for ghost files) implements the same
+interface. The rules engine (`src/game/core.ts`, `mapgen.ts`, `rng.ts`, `replay.ts`, …) never touches the browser, so the
+Worker can import it and run `verifyRecord()` itself. A record is accepted only if its seed and starting hero are the
+official ones for that day **and** replaying its actions reproduces its claimed result. Speed rankings use turns, which
+replays can check; wall-clock time is display-only.
