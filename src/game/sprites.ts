@@ -1,6 +1,6 @@
 import {
   C, VW, VH, WALL, STAIRS, STAIRS_RISK, WATER, LAVA, CHASM, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
-  type Game, type Mon, type Item,
+  type Game, type Mon, type Item, type Fx,
 } from "./core.ts";
 import { TIER_COLORS, type RelicId } from "./relics.ts";
 import { classOf } from "./classes.ts";
@@ -341,6 +341,19 @@ export const SPRITES: Record<string, SpriteDef> = {
     pal: { p:"#6A3A8A", w:"#E6DCC9", k:"#12161E", r:"#C04A3B", d:"#3A1E4A" },
     rows: ["..dddd..",".dppppd.","dpwwrwpd","dpwkkwpd","dpwkkwpd","dprwwwpd",".dppppd.","..dddd.."],
   },
+  /* ---- the merchant and new scrolls ---- */
+  vendor: {
+    pal: { h:"#6A4A2A", d:"#4A3420", f:"#D9B48A", k:"#12161E", g:"#F2D06B", b:"#8B5A2B" },
+    rows: ["..hhhh..",".hhhhhh.",".hffffh.",".hfkkfh.","bbhhhhg.","bbddddgg","bb.dd.g.",".d....d."],
+  },
+  frost: {
+    pal: { p:"#D8E4EE", d:"#8FA3B0", f:"#6FC4C8", l:"#CFF3F2" },
+    rows: [".dddddd.",".pppppp.",".pdlldp.",".plfflp.",".pdlldp.",".pppppp.",".pppppp.",".dddddd."],
+  },
+  storm: {
+    pal: { p:"#E6DCC9", d:"#9A9484", y:"#F2D06B", w:"#FFF4C2" },
+    rows: [".dddddd.",".pppppp.",".ppyyyp.",".pyyppp.",".ppyyyp.",".pppyyp.",".pppypp.",".dddddd."],
+  },
   /* ---- bosses ---- */
   ratking: {
     pal: { b:"#7A5138", d:"#5C3B28", k:"#C04A3B", y:"#F2D06B", t:"#93705C" },
@@ -673,6 +686,8 @@ export function drawMap(
         ctx.fillRect(px + ts * (0.6 - t * 0.08), py + ts * 0.65, ts * 0.12, ts * 0.12);
       }
 
+      if (g.vendor && g.vendor.x === x && g.vendor.y === y) blit(spriteCanvas("vendor"), px, py, vis ? 1 : 0.4);
+
       const tr = g.traps.find(o => o.found && o.x === x && o.y === y);
       if (tr) blit(spriteCanvas(tr.t), px, py, vis ? 1 : 0.4);
 
@@ -694,6 +709,13 @@ export function drawMap(
       else if (m && vis) {
         if (m.boss) { ctx.fillStyle = "rgba(233,161,59,0.18)"; ctx.fillRect(px, py, ts, ts); }
         blit(monSprite(m), px, py);
+        if (m.frozen > 0) {
+          ctx.fillStyle = "rgba(140,210,240,0.45)";
+          ctx.fillRect(px, py, ts, ts);
+          ctx.strokeStyle = "rgba(220,245,255,0.9)";
+          ctx.lineWidth = Math.max(1, ts * 0.05);
+          ctx.strokeRect(px + 2, py + 2, ts - 4, ts - 4);
+        }
         if (targets.has(i)) {
           // in reach: little amber brackets in the corners
           ctx.fillStyle = C.ember;
@@ -733,4 +755,96 @@ export function drawMap(
       }
     }
   }
+}
+
+/* ============================ effects ============================ */
+/* Projectiles and bursts drawn over the map for a moment after an action.
+   t runs 0 → 1 over the effect's life; positions are tile coordinates. */
+
+export const FX_MS: Record<string, number> = {
+  arrow: 220, thrust: 160, bolt: 260, gaze: 260, web: 260, fire: 280, zap: 320, frost: 380, burst: 420, blink: 260, slam: 380, beam: 360,
+};
+
+export function drawFx(ctx: CanvasRenderingContext2D, fx: Fx, t: number, ts: number, camX: number, camY: number) {
+  const cx = (p: { x: number; y: number }) => (p.x - camX + 0.5) * ts;
+  const cy = (p: { x: number; y: number }) => (p.y - camY + 0.5) * ts;
+  const ax = cx(fx.from), ay = cy(fx.from), bx = cx(fx.to), by = cy(fx.to);
+  const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
+  const ease = 1 - (1 - t) * (1 - t);
+  ctx.save();
+  ctx.lineCap = "round";
+  switch (fx.k) {
+    case "arrow": case "thrust": case "bolt": case "gaze": case "web": case "fire": {
+      const x = lerp(ax, bx, ease), y = lerp(ay, by, ease);
+      const ang = Math.atan2(by - ay, bx - ax);
+      if (fx.k === "arrow" || fx.k === "thrust") {
+        // a little arrow: shaft and head pointing the way it flies
+        ctx.translate(x, y); ctx.rotate(ang);
+        ctx.strokeStyle = fx.k === "arrow" ? "#D8C8A8" : "#C9CFD6";
+        ctx.lineWidth = Math.max(2, ts * 0.1);
+        ctx.beginPath(); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(ts * 0.25, 0); ctx.stroke();
+        ctx.fillStyle = "#F4F6F8";
+        ctx.beginPath(); ctx.moveTo(ts * 0.45, 0); ctx.lineTo(ts * 0.15, -ts * 0.17); ctx.lineTo(ts * 0.15, ts * 0.17); ctx.fill();
+        if (fx.k === "arrow") {   // fletching
+          ctx.strokeStyle = "#C04A3B"; ctx.lineWidth = Math.max(1.5, ts * 0.07);
+          ctx.beginPath(); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(-ts * 0.55, -ts * 0.12); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(-ts * 0.55, ts * 0.12); ctx.stroke();
+        }
+      } else {
+        const col = fx.k === "fire" ? ["#F2C46B", "#E9A13B", "#C04A3B"] : fx.k === "bolt" ? ["#E0C8FF", "#9A5AA8", "#4E3A6E"]
+          : fx.k === "gaze" ? ["#FFD0E0", "#E07A9A", "#6A3A8A"] : ["#FFFFFF", "#E6E6F0", "#9A9AA8"];
+        // a glowing ball with a short tail
+        for (let k = 3; k >= 0; k--) {
+          const tx = lerp(ax, bx, Math.max(0, ease - k * 0.07)), ty = lerp(ay, by, Math.max(0, ease - k * 0.07));
+          ctx.globalAlpha = 1 - k * 0.22;
+          ctx.fillStyle = col[Math.min(2, k)];
+          ctx.beginPath(); ctx.arc(tx, ty, ts * (0.24 - k * 0.035), 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      break;
+    }
+    case "zap": {
+      // jagged lightning along the chain, flickering out
+      const pts = (fx.path ?? [fx.from, fx.to]).map(p => [cx(p), cy(p)]);
+      ctx.globalAlpha = 1 - t * 0.8;
+      ctx.strokeStyle = "#FFF4C2"; ctx.lineWidth = Math.max(2, ts * 0.09);
+      ctx.beginPath();
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+        if (i === 0) ctx.moveTo(x0, y0);
+        for (let k = 1; k <= 4; k++) {
+          const j = k / 4, jitter = k < 4 ? (Math.sin((i + k) * 12.9 + t * 40) * ts * 0.18) : 0;
+          ctx.lineTo(lerp(x0, x1, j) + jitter, lerp(y0, y1, j) - jitter);
+        }
+      }
+      ctx.stroke();
+      break;
+    }
+    case "frost": case "burst": case "slam": {
+      // an expanding ring
+      const maxR = ts * (fx.k === "frost" ? 2.5 : fx.k === "slam" ? 2.6 : 5);
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = fx.k === "frost" ? "#CFF3F2" : fx.k === "slam" ? "#E9A13B" : "#F2C46B";
+      ctx.lineWidth = Math.max(2, ts * (fx.k === "burst" ? 0.25 : 0.18));
+      ctx.beginPath(); ctx.arc(ax, ay, Math.max(1, maxR * ease), 0, Math.PI * 2); ctx.stroke();
+      break;
+    }
+    case "blink": {
+      // a puff where you were, a flash where you land
+      ctx.globalAlpha = 1 - t;
+      ctx.fillStyle = "#B6C8F0";
+      ctx.beginPath(); ctx.arc(ax, ay, ts * 0.5 * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#E6F0FF"; ctx.lineWidth = Math.max(1.5, ts * 0.08);
+      ctx.beginPath(); ctx.arc(bx, by, ts * 0.6 * ease, 0, Math.PI * 2); ctx.stroke();
+      break;
+    }
+    case "beam": {
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = "#E07A9A"; ctx.lineWidth = ts * 0.45;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.strokeStyle = "#FFE0EC"; ctx.lineWidth = ts * 0.15;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      break;
+    }
+  }
+  ctx.restore();
 }

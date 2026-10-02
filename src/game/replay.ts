@@ -94,7 +94,7 @@ function sameStart(a: StartStats, b: StartStats) {
   const relics = (r: StartStats["relics"]) => JSON.stringify(Object.entries(r).filter(([, t]) => t).sort());
   return x.cls === y.cls && x.maxHp === y.maxHp && x.atk === y.atk && x.def === y.def && x.sight === y.sight
     && x.tonics === y.tonics && x.greed === y.greed && x.embers === y.embers && x.waystones === y.waystones
-    && x.weapon === y.weapon && relics(x.relics) === relics(y.relics);
+    && x.weapon === y.weapon && x.mana === y.mana && relics(x.relics) === relics(y.relics);
 }
 
 export function verifyRecord(rec: RunRecord, expect: Expectation, replay = replayChecked(rec)): Verdict {

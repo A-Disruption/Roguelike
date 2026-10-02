@@ -5,7 +5,7 @@
 import {
   newRun, freshMeta, startStats, dailySeed, dailyClass, POTION_EFFECTS, WEAPONS, applyAction, stepAction, serializeRun, deserializeRun,
   descend, revealMimic, playerAttack, endTurn, idx, inB, WALL, WATER, LAVA, FLOOR, STAIRS, STAIRS_RISK, isStairs, DIRS8, canReach,
-  computeFov, sightOf, cheb,
+  computeFov, sightOf, cheb, canFirebolt, totalAtk, scoreOf, trainCost,
   type Game, type RunSetup,
 } from "../src/game/core.ts";
 import {
@@ -33,11 +33,21 @@ const noFlash = () => {};
 /* a fingerprint of the state after each action, to find where a replay diverges */
 const fp = (g: Game) => `${g.turns}|${g.hp}/${g.maxHp}|${g.p.x},${g.p.y}|${g.rng.s}|${g.mons.map(m => `${m.kind}${m.x},${m.y}:${m.hp}`).join(";")}|${g.floorKey}`;
 const stats = { runs: 0, actions: 0, deaths: 0, maxDepth: 0, zonesReached: 0, perilous: 0, relicsFound: 0, lavaKills: 0,
-  reachAttacks: 0, revives: 0, splits: 0, mimicsRevealed: 0, saveReloads: 0 };
+  reachAttacks: 0, revives: 0, splits: 0, mimicsRevealed: 0, saveReloads: 0, spells: 0, shopping: 0, bought: 0, trained: 0 };
 
 function randomAction(g: Game): string {
   const r = Math.random();
+  if (isStairs(g.grid[idx(g.p.x, g.p.y)]) && r < 0.15 && g.echoes > 25) return `u${Math.floor(Math.random() * 3)}`;
   if (isStairs(g.grid[idx(g.p.x, g.p.y)]) && r < 0.6) return "d";
+  if (g.vendor && cheb(g.vendor, g.p) <= 1 && r < 0.5) { stats.shopping++; return `b${Math.floor(Math.random() * g.vendor.stock.length)}`; }
+  if (g.maxMana > 0 && r < 0.12) {
+    stats.spells++;
+    const m = g.mons.find(o => canFirebolt(g, o));
+    if (m && Math.random() < 0.6) return `cf${m.x - g.p.x}.${m.y - g.p.y}`;
+    return `c${"nbe"[Math.floor(Math.random() * 3)]}`;
+  }
+  if (r < 0.013) return "q";
+  if (r < 0.016) return "z";
   if (r < 0.02) return "w";
   if (r < 0.04) return "t";
   if (r < 0.06) return `p${Math.floor(Math.random() * 6)}`;
@@ -401,23 +411,112 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
   const knight = make("knight"), mage = make("mage"), rogue = make("rogue"), ranger = make("ranger"), wand = make("wanderer");
   if (knight.weapon?.name !== WEAPONS[1].name || knight.maxHp !== 44 || knight.inv.tonic !== 0 || knight.relics.thorns !== 1)
     throw new Error("knight kit wrong");
-  if (mage.inv.ember !== 3 || mage.relics.kindling !== 1) throw new Error("mage kit wrong");
+  if (mage.mana !== 10 || mage.maxMana !== 10 || mage.inv.ember !== 0) throw new Error("mage kit wrong");
+  if (wand.maxMana !== 0 || applyAction(wand, "cn", noFlash)) throw new Error("only casters can cast");
   const shadow = POTION_EFFECTS.findIndex(e => e.k === "shadow");
   if (!rogue.known[shadow] || rogue.relics.feather !== 3 || rogue.inv.waystone !== 1) throw new Error("rogue kit wrong");
   if (wand.known.some(Boolean)) throw new Error("wanderer should know no potions");
-  if (ranger.relics.reach !== 3 || ranger.sight !== 7) throw new Error("ranger kit wrong");
+  if (ranger.relics.reach !== 2 || ranger.sight !== 7) throw new Error("ranger kit wrong");
   // same seed, same map, whatever the hero
   if (serializeRun(knight).G !== serializeRun(mage).G) throw new Error("class changed the map");
-  // the mage's embers hit harder than the wanderer's on the same roll
-  const burn = (g: Game) => {
-    const m = g.mons[0];
-    g.vis.add(idx(m.x, m.y)); g.inv.ember = 1; m.hp = 9999;
-    applyAction(g, "e", noFlash);
-    return 9999 - (g.mons.includes(m) ? m.hp : 0);
+}
+
+// spells, scrolls, merchants and training, on an open floor
+{
+  const arena = (cls: (typeof CLASS_IDS)[number]) => {
+    const g = newRun({ mode: "free", seed: 77, day: null, start: startStats(freshMeta(), cls), ranked: false, startedAt: 1 });
+    g.items = []; g.traps = []; g.vendor = null;
+    g.grid.fill(FLOOR);
+    for (let x = 0; x < 31; x++) { g.grid[idx(x, 0)] = WALL; g.grid[idx(x, 28)] = WALL; }
+    g.p = { x: 10, y: 10 };
+    const proto = g.mons[0];
+    const mon = (x: number, y: number) => ({ ...proto, kind: "rat", name: "cellar rat", x, y, hp: 500, maxHp: 500, def: 0,
+      ranged: false, phase: false, erratic: false, slow: false, fast: false, boss: false, disguised: false, alerted: true, frozen: 0, splits: false });
+    g.mons = [];
+    g.vis = computeFov(g);
+    return { g, mon };
   };
-  const a = make("mage"), b = make("wanderer");
-  const dm = burn(a), dw = burn(b);
-  if (!(dm > dw)) throw new Error(`mage ember ${dm} not hotter than wanderer ${dw}`);
+  // Firebolt: hits a monster 4 away, costs 2 mana, shows a fireball
+  { const { g, mon } = arena("mage"); const m = mon(14, 10); g.mons = [m]; g.vis = computeFov(g);
+    if (!applyAction(g, "cf4.0", noFlash) || m.hp >= 500 || g.mana !== 8 || !g.fx.some(f => f.k === "fire")) throw new Error("firebolt failed");
+    if (applyAction(g, "cf9.0", noFlash)) throw new Error("firebolt reached too far"); }
+  // Frost Nova freezes nearby monsters: they don't act while frozen
+  { const { g, mon } = arena("mage"); const m = mon(11, 10); g.mons = [m]; g.vis = computeFov(g);
+    applyAction(g, "cn", noFlash);
+    const hp = g.hp;
+    if (m.frozen < 2) throw new Error("frost nova didn't freeze");
+    applyAction(g, "w", noFlash); applyAction(g, "w", noFlash);
+    if (g.hp !== hp) throw new Error("a frozen monster still attacked"); }
+  // Blink moves you 3-6 tiles; running out of mana stops casting; mana comes back
+  { const { g } = arena("mage"); const from = { ...g.p };
+    applyAction(g, "cb", noFlash);
+    const d = cheb(from, g.p);
+    if (d < 3 || d > 6) throw new Error(`blink went ${d} tiles`);
+    g.mana = 1;
+    if (applyAction(g, "ce", noFlash)) throw new Error("cast without enough mana");
+    for (let i = 0; i < 4; i++) applyAction(g, "w", noFlash);
+    if (g.mana !== 3) throw new Error(`mana regen wrong: ${g.mana}`); }
+  // frost and storm scrolls work for anyone
+  { const { g, mon } = arena("wanderer"); const a = mon(12, 10), b = mon(13, 11), c = mon(15, 10), far = mon(10, 20);
+    g.mons = [a, b, c, far]; g.vis = computeFov(g); g.inv.storm = 1; g.inv.frost = 1;
+    applyAction(g, "z", noFlash);
+    if ([a, b, c].some(m => m.hp >= 500) || far.hp < 500) throw new Error("storm should hit the 3 nearest");
+    applyAction(g, "q", noFlash);
+    if (!a.frozen || c.frozen) throw new Error("frost scroll radius wrong"); }
+  // archers now shoot from 4 tiles, not 5
+  { const { g, mon } = arena("wanderer"); const archer = { ...mon(15, 10), kind: "archer", name: "goblin archer", ranged: true, atk: 5 };
+    g.mons = [archer]; g.vis = computeFov(g); g.maxHp = g.hp = 999;
+    const hp = g.hp; endTurn(g, noFlash);
+    if (g.hp !== hp && cheb(archer, g.p) === 5) throw new Error("archer shot from 5 tiles"); }
+  // Magma Heart answers melee hits only
+  { const { g, mon } = arena("wanderer"); g.relics.magma = 3; g.maxHp = g.hp = 999;
+    const archer = { ...mon(13, 10), kind: "archer", name: "goblin archer", ranged: true, atk: 50 };
+    g.mons = [archer]; g.vis = computeFov(g);
+    for (let i = 0; i < 6; i++) endTurn(g, noFlash);
+    if (g.hazards.length) throw new Error("lava spawned under an archer");
+    const brute = mon(11, 10); brute.atk = 50; g.mons = [brute];
+    for (let i = 0; i < 3 && !g.hazards.length; i++) endTurn(g, noFlash);
+    if (!g.hazards.length) throw new Error("lava didn't answer a melee hit"); }
+  // reach attacks hit for 80%
+  { const { g, mon } = arena("ranger"); const m = mon(12, 10); m.def = 0; g.mons = [m]; g.vis = computeFov(g);
+    let total = 0; for (let i = 0; i < 40; i++) { m.hp = 500; m.x = 12; m.y = 10; g.p = { x: 10, y: 10 }; g.vis = computeFov(g); applyAction(g, "a2.0", noFlash); total += 500 - m.hp; }
+    const avg = total / 40;
+    if (avg > totalAtk(g) * 0.9) throw new Error(`reach hits too hard: ${avg} of ${totalAtk(g)}`); }
+  // the merchant: buy if you can afford it, only next to them, sold items stay sold
+  { const { g } = arena("wanderer");
+    g.vendor = { x: 11, y: 10, stock: [
+      { item: { t: "potion", name: "potion", color: 2 }, price: 40, sold: false },
+      { item: { t: "weapon", name: "runed blade", atk: 8 }, price: 130, sold: false } ] };
+    g.echoes = 100;
+    if (applyAction(g, "b1", noFlash)) throw new Error("bought something unaffordable");
+    if (!applyAction(g, "b0", noFlash) || g.echoes !== 60 || g.spent !== 40 || g.potions[2] !== 1) throw new Error("buying failed");
+    if (!g.known[g.potionMap[2]]) throw new Error("bought potion should be identified");
+    if (applyAction(g, "b0", noFlash)) throw new Error("bought a sold item");
+    g.p = { x: 14, y: 10 }; g.echoes = 999;
+    if (applyAction(g, "b1", noFlash)) throw new Error("bought from across the room");
+    const before = scoreOf(g);
+    g.p = { x: 10, y: 10 }; applyAction(g, "b1", noFlash);
+    if (g.weapon?.name !== "runed blade" || scoreOf(g) !== before) throw new Error("gear purchase or score wrong");
+    if (applyAction(g, stepAction(1, 0), noFlash)) throw new Error("walked into the merchant");
+    const saved = deserializeRun(JSON.parse(JSON.stringify(serializeRun(g))));
+    if (!saved.vendor || !saved.vendor.stock[0].sold || saved.vendor.stock.length !== 2) throw new Error("merchant didn't save"); }
+  // training only on the stairs, and each round costs more
+  { const { g } = arena("wanderer"); g.echoes = 500;
+    if (applyAction(g, "u1", noFlash)) throw new Error("trained off the stairs");
+    g.grid[idx(g.p.x, g.p.y)] = STAIRS;
+    const atk = g.atk;
+    applyAction(g, "u1", noFlash); applyAction(g, "u1", noFlash);
+    if (g.atk !== atk + 2 || g.echoes !== 500 - trainCost(1, 0) - trainCost(1, 1)) throw new Error("training wrong");
+    const hp = g.maxHp; applyAction(g, "u0", noFlash);
+    if (g.maxHp !== hp + 6) throw new Error("health training wrong"); }
+  // merchants turn up on some floors, never on boss floors
+  { const g = newRun({ mode: "free", seed: 31, day: null, start: startStats(freshMeta(), "wanderer"), ranked: false, startedAt: 1 });
+    let shops = 0;
+    for (let d = 2; d <= 40; d++) {
+      descend(g, "s");
+      if (g.vendor) { shops++; if (isBossFloor(g.depth)) throw new Error("merchant on a boss floor"); if (g.grid[idx(g.vendor.x, g.vendor.y)] !== FLOOR) throw new Error("merchant off the floor"); }
+    }
+    if (shops < 5) throw new Error(`only ${shops} merchants in 39 floors`); }
   // daily heroes: deterministic, and over a month every class shows up
   const seen = new Set<string>();
   for (let d = 1; d <= 31; d++) {

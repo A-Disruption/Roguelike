@@ -16,7 +16,7 @@ export function PauseMenu({ g, onResume, onCamp }: { g: Game; onResume: () => vo
   const relics = (Object.keys(g.relics) as RelicId[]).filter(id => g.relics[id]);
   const held = POTION_COLORS.map((_, c) => c).filter(c => g.potions[c] > 0);
   const known = POTION_EFFECTS.map((e, i) => ({ e, i })).filter(({ i }) => g.known[i]);
-  const packEmpty = !g.inv.tonic && !g.inv.ember && !g.inv.waystone && !g.inv.key && !held.length;
+  const packEmpty = !g.inv.tonic && !g.inv.ember && !g.inv.waystone && !g.inv.key && !g.inv.frost && !g.inv.storm && !held.length;
 
   const row = (icon: ReactNode, label: ReactNode, sub?: ReactNode, right?: ReactNode) => (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.memWall}` }}>
@@ -49,6 +49,7 @@ export function PauseMenu({ g, onResume, onCamp }: { g: Game; onResume: () => vo
         {stat("armor", totalDef(g))}
         {stat("sight", sightOf(g))}
         {stat("reach", reachOf(g) > 1 ? `${reachOf(g)} tiles` : "melee")}
+        {g.maxMana > 0 && stat("mana", `${g.mana}/${g.maxMana}`)}
         {stat("floor", `${g.depth}${g.floorKey.endsWith("r") ? " ☠" : ""}`)}
         {stat("turns", g.turns)}
         {stat("kills", g.kills)}
@@ -66,6 +67,8 @@ export function PauseMenu({ g, onResume, onCamp }: { g: Game; onResume: () => vo
       {packEmpty && <div style={{ color: C.dim, fontSize: 13 }}>Your pack is empty.</div>}
       {g.inv.tonic > 0 && row(<SpriteIcon name="tonic" size={24} />, "tonic", "heals almost half your health", `×${g.inv.tonic}`)}
       {g.inv.ember > 0 && row(<SpriteIcon name="ember" size={24} />, "ember scroll", "burns every monster in sight", `×${g.inv.ember}`)}
+      {g.inv.frost > 0 && row(<SpriteIcon name="frost" size={24} />, "frost scroll", "freezes everything within 2 tiles", `×${g.inv.frost}`)}
+      {g.inv.storm > 0 && row(<SpriteIcon name="storm" size={24} />, "storm scroll", "lightning strikes the 3 nearest monsters", `×${g.inv.storm}`)}
       {g.inv.waystone > 0 && row(<SpriteIcon name="waystone" size={24} />, "waystone", "teleports you somewhere you've been", `×${g.inv.waystone}`)}
       {g.inv.key > 0 && row(<SpriteIcon name="key" size={24} />, "key", "opens a locked chest on this floor", `×${g.inv.key}`)}
       {held.map(c => row(<SpriteIcon src={potionSprite(c)} size={24} />, potionLabel(g, c),

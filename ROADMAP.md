@@ -45,6 +45,16 @@ Tick things off as they ship. Ideas can move between sections or be crossed out 
 - [x] **New monster tricks** — goblin archers shoot from range, slimes split when hit, ghosts drift through walls
 - [x] **Traps** — hidden spikes, pits that drop you a floor, alarm plates that wake the whole floor; you can spot them when close
 
+## Done — v1.6 "Spells, merchants & balance"
+
+- [x] **Balance** — echo upgrades cost far more (no more maxing in one run); Ranger reach 3; reach attacks deal 80%; enemy archers / void eyes shoot from 4 tiles; Magma Heart lava only answers melee hits
+- [x] **Ember Mage casts spells** — mana (refills 1 per 2 turns, +1 max per level): Firebolt (aimed, 4 tiles), Frost Nova, Blink, Ember Burst
+- [x] **New scrolls for everyone** — frost scroll (freeze nearby), storm scroll (chain lightning on the 3 nearest)
+- [x] **Animations** — arrows, spear thrusts, fireballs, lich bolts, void gazes, webs, lightning, frost / fire rings, blink, golem slam, maw beam
+- [x] **Training on the stairs** — spend the run's echoes on +6 health / +1 attack / +1 armor before going down, each round costs more
+- [x] **Merchants** — on ~30% of floors (50% perilous, never boss floors): tonic, a labeled potion, a scroll, better gear, sometimes a relic
+- [x] Spending echoes doesn't lower your daily score
+
 ## Done — v1.5.1 "Backend-ready data"
 
 - [x] **Tamper-proof verification** — dailies must use the official seed and today's hero; illegal or truncated moves, inflated scores and other rules versions are rejected

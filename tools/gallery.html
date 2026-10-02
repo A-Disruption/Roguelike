@@ -63,7 +63,7 @@
       ...ARMORS.map(a => [a.name, itemSprite({ t: "armor", name: a.name })]),
       ...POTION_COLORS.map((p, i) => [`${p.name} potion`, potionSprite(i)]),
       ["tonic", spriteCanvas("tonic")], ["chest", itemSprite({ t: "chest" })], ["locked chest", itemSprite({ t: "chest", locked: true })],
-      ["key", spriteCanvas("key")], ["ember", spriteCanvas("ember")], ["waystone", spriteCanvas("waystone")], ["echoes", spriteCanvas("echoes")],
+      ["key", spriteCanvas("key")], ["ember", spriteCanvas("ember")], ["waystone", spriteCanvas("waystone")], ["echoes", spriteCanvas("echoes")], ["frost scroll", spriteCanvas("frost")], ["storm scroll", spriteCanvas("storm")], ["merchant", spriteCanvas("vendor")],
     ]);
     section("Relics (tier I / II / III)", RELIC_IDS.flatMap(id => [1, 2, 3].map(t => [`${RELICS[id].name} ${"I".repeat(t)}`, relicSprite(id, t)])));
     section("Ghosts & graves", [["ghost", ghostSprite("wanderer", -1, -1)], ["ghost, sword", ghostSprite("wanderer", 1, 2)], ["ghost, kingsbane", ghostSprite("wanderer", 4, 4)], ["grave", spriteCanvas("grave")]]);

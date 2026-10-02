@@ -16,7 +16,7 @@ export type { Pt, Room } from "./tiles.ts";
 
 /* Bump whenever a change would make old seeds/replays play out differently.
    Runs only compare (and ghosts only replay) between matching rules versions. */
-export const RULES_VERSION = 4;
+export const RULES_VERSION = 5;
 
 
 export const C = {
@@ -155,14 +155,33 @@ const upCosts = (base: number, growth: number, n: number) =>
 
 /* Echo upgrades only apply to free runs; daily runs always start from scratch. */
 export const UPGRADES = [
-  { k:"vigor",   name:"Vigor",   blurb:"+7 health",          max:20, costs: upCosts(20, 1.17, 20) },
-  { k:"edge",    name:"Edge",    blurb:"+1 attack",          max:15, costs: upCosts(30, 1.2, 15) },
-  { k:"hide",    name:"Hide",    blurb:"+1 armor",           max:10, costs: upCosts(45, 1.25, 10) },
-  { k:"lantern", name:"Lantern", blurb:"+1 tile of sight",   max:4,  costs: upCosts(60, 1.7, 4) },
-  { k:"satchel", name:"Satchel", blurb:"start with a tonic", max:6,  costs: upCosts(25, 1.4, 6) },
-  { k:"greed",   name:"Greed",   blurb:"+20% echoes",        max:10, costs: upCosts(40, 1.3, 10) },
+  { k:"vigor",   name:"Vigor",   blurb:"+7 health",          max:20, costs: upCosts(40, 1.22, 20) },
+  { k:"edge",    name:"Edge",    blurb:"+1 attack",          max:15, costs: upCosts(60, 1.25, 15) },
+  { k:"hide",    name:"Hide",    blurb:"+1 armor",           max:10, costs: upCosts(90, 1.3, 10) },
+  { k:"lantern", name:"Lantern", blurb:"+1 tile of sight",   max:4,  costs: upCosts(120, 1.9, 4) },
+  { k:"satchel", name:"Satchel", blurb:"start with a tonic", max:6,  costs: upCosts(50, 1.45, 6) },
+  { k:"greed",   name:"Greed",   blurb:"+20% echoes",        max:10, costs: upCosts(80, 1.35, 10) },
 ];
 export type Upgrade = typeof UPGRADES[number];
+
+/* the Ember Mage's spells; casting costs mana, which refills 1 every 2 turns */
+export const SPELLS = {
+  f: { name: "Firebolt",    cost: 2, blurb: "a bolt of fire at one monster up to 4 tiles away" },
+  n: { name: "Frost Nova",  cost: 3, blurb: "freezes everything within 2 tiles (bosses only briefly)" },
+  b: { name: "Blink",       cost: 3, blurb: "teleports you a short way, away from danger" },
+  e: { name: "Ember Burst", cost: 6, blurb: "burns every monster you can see" },
+} as const;
+export type SpellId = keyof typeof SPELLS;
+export const SPELL_IDS = Object.keys(SPELLS) as SpellId[];
+export const FIREBOLT_RANGE = 4;
+
+/* training on the stairs between floors, paid with this run's echoes */
+export const TRAINING = [
+  { name: "Toughen up", blurb: "+6 max health", base: 25, step: 15 },
+  { name: "Sharpen",    blurb: "+1 attack",     base: 40, step: 25 },
+  { name: "Brace",      blurb: "+1 armor",      base: 50, step: 30 },
+];
+export const trainCost = (k: number, times: number) => TRAINING[k].base + TRAINING[k].step * times;
 
 /* ============================ types ============================ */
 
@@ -183,6 +202,7 @@ export type Mon = {
   disguised: boolean;// a mimic still pretending to be a chest
   cd: number;        // bosses: turns since their last special attack
   charge: number;    // bosses: a telegraphed attack about to land (1 slam, 2 beam)
+  frozen: number;    // turns left frozen solid (Frost Nova / frost scroll)
   tick: number; x: number; y: number;
 };
 
@@ -190,7 +210,7 @@ export type Mon = {
 export type Dex = { seen: Record<string, number>; kills: Record<string, number>; relics: Record<string, number> };
 export const freshDex = (): Dex => ({ seen: {}, kills: {}, relics: {} });
 
-export type Pocket = "tonic" | "ember" | "waystone" | "key";
+export type Pocket = "tonic" | "ember" | "waystone" | "key" | "frost" | "storm";
 export type ItemType = Pocket | "weapon" | "armor" | "echoes" | "potion" | "chest" | "relic";
 export type Item = {
   t: ItemType; name: string; x: number; y: number;
@@ -198,6 +218,14 @@ export type Item = {
   seed?: number;                 // chests: what's inside is decided when the floor is made
   relic?: RelicId; tier?: number;
 };
+
+/* a merchant: bump into them to shop; what they sell is decided when the floor is made */
+export type VendorItem = { item: Omit<Item, "x" | "y">; price: number; sold: boolean };
+export type Vendor = { x: number; y: number; stock: VendorItem[] };
+
+/* visual effects for the screen to animate (arrows, bolts, frost…). Not saved, not part of replays. */
+export type FxKind = "arrow" | "thrust" | "bolt" | "gaze" | "web" | "fire" | "zap" | "frost" | "burst" | "blink" | "slam" | "beam";
+export type Fx = { k: FxKind; from: Pt; to: Pt; path?: Pt[] };
 
 export type TrapType = keyof typeof TRAP_NAMES;
 export type Trap = { t: TrapType; x: number; y: number; found: boolean };
@@ -212,6 +240,7 @@ export type StartStats = {
   maxHp: number; atk: number; def: number; sight: number; tonics: number; greed: number;
   embers: number; waystones: number; weapon: number;       // weapon: index into WEAPONS, -1 for none
   relics: Partial<Record<RelicId, number>>;               // relic powers the hero starts with
+  mana: number;                                            // spellcasters only
 };
 
 export type Game = {
@@ -241,6 +270,11 @@ export type Game = {
   wardens: number;       // bosses slain this run (for unlocks)
   chests: number;        // chests opened this run (for unlocks)
   webbed: number;        // turns left stuck in a web
+  mana: number; maxMana: number; manaTick: number;  // spellcasting (the Ember Mage)
+  train: number[];       // times trained at the stairs this run: [health, attack, armor]
+  spent: number;         // echoes spent at merchants and training (still count toward score)
+  vendor: Vendor | null;
+  fx: Fx[];              // effects from the last action, for the screen to animate
   marks: [number, number][]; // tiles a boss is about to hit (shown in red)
   dex: Dex;
   level: number; xp: number; next: number;
@@ -275,7 +309,7 @@ export const sightOf = (g: Pick<Game, "sight" | "relics" | "depth">) => {
 export const reachOf = (g: Game) => 1 + relicVal(g, "reach");
 
 export function scoreOf(g: Game) {
-  return g.depth * 100 + g.kills * 10 + g.echoes + g.perils * 50;
+  return g.depth * 100 + g.kills * 10 + g.echoes + g.spent + g.perils * 50;
 }
 
 const ctr = center;
@@ -329,7 +363,7 @@ function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1, g
     ranged: !!base.ranged, phase: !!base.phase, splits: !!base.splits,
     fast: !!base.fast, explodes: !!base.explodes, fireproof: !!base.fireproof,
     variant: v ? variant : 0, wpn, arm, gen, alerted: false, disguised: false,
-    cd: 0, charge: 0, tick: 0,
+    cd: 0, charge: 0, frozen: 0, tick: 0,
   };
 }
 
@@ -362,13 +396,46 @@ function rollItem(r: Rng, depth: number, bonus = 0): Omit<Item, "x" | "y"> {
   const roll = r.next();
   const d = depth + bonus * 2;
   if (roll < 0.03) return rollRelic(r, depth, bonus);
-  if (roll < 0.25) return { t: "tonic", name: "tonic" };
-  if (roll < 0.40) return { t: "potion", name: "potion", color: r.int(POTION_COLORS.length) };
-  if (roll < 0.50) return { t: "ember", name: "ember scroll" };
-  if (roll < 0.58) return { t: "waystone", name: "waystone" };
-  if (roll < 0.73) { const w = tierFor(d, WEAPONS, r); return { t: "weapon", name: w.name, atk: w.atk }; }
+  if (roll < 0.23) return { t: "tonic", name: "tonic" };
+  if (roll < 0.37) return { t: "potion", name: "potion", color: r.int(POTION_COLORS.length) };
+  if (roll < 0.45) return { t: "ember", name: "ember scroll" };
+  if (roll < 0.50) return { t: "frost", name: "frost scroll" };
+  if (roll < 0.54) return { t: "storm", name: "storm scroll" };
+  if (roll < 0.60) return { t: "waystone", name: "waystone" };
+  if (roll < 0.74) { const w = tierFor(d, WEAPONS, r); return { t: "weapon", name: w.name, atk: w.atk }; }
   if (roll < 0.86) { const a = tierFor(d, ARMORS, r); return { t: "armor", name: a.name, def: a.def }; }
   return { t: "echoes", name: "spill of echoes", amt: r.range(4, 9) + depth * 2 + bonus * 6 };
+}
+
+const vendorAt = (g: Pick<Game, "vendor">, x: number, y: number) => !!g.vendor && g.vendor.x === x && g.vendor.y === y;
+export { vendorAt };
+
+function priceOf(it: Omit<Item, "x" | "y">, depth: number) {
+  switch (it.t) {
+    case "tonic": return 20 + 2 * depth;
+    case "potion": return 30 + 3 * depth;
+    case "ember": case "frost": return 30 + 3 * depth;
+    case "storm": return 40 + 4 * depth;
+    case "waystone": return 25 + 2 * depth;
+    case "weapon": return 30 + (it.atk ?? 0) * 12;
+    case "armor": return 30 + (it.def ?? 0) * 15;
+    case "relic": return 120 + 60 * (it.tier ?? 1);
+    default: return 50;
+  }
+}
+
+function stockVendor(r: Rng, depth: number): VendorItem[] {
+  const gearDepth = depth + 3;   // merchants carry gear a little better than the floor
+  const items: Omit<Item, "x" | "y">[] = [
+    { t: "tonic", name: "tonic" },
+    { t: "potion", name: "potion", color: r.int(POTION_COLORS.length) },
+    r.pick<Omit<Item, "x" | "y">>([{ t: "ember", name: "ember scroll" }, { t: "frost", name: "frost scroll" }, { t: "storm", name: "storm scroll" }, { t: "waystone", name: "waystone" }]),
+    r.chance(0.5)
+      ? (() => { const w = tierFor(gearDepth, WEAPONS, r); return { t: "weapon" as const, name: w.name, atk: w.atk }; })()
+      : (() => { const a = tierFor(gearDepth, ARMORS, r); return { t: "armor" as const, name: a.name, def: a.def }; })(),
+  ];
+  if (r.chance(0.3)) items.push(rollRelic(r, depth, 1));
+  return items.map(item => ({ item, price: priceOf(item, depth), sold: false }));
 }
 
 export function potionLabel(g: Game, color: number) {
@@ -388,6 +455,7 @@ function dropNear(g: Game, x: number, y: number, it: Omit<Item, "x" | "y">, r: R
     if (avoidPlayer && tx === g.p.x && ty === g.p.y) continue;
     if (g.items.some(i => i.x === tx && i.y === ty)) continue;
     if (g.traps.some(t => t.x === tx && t.y === ty)) continue;
+    if (vendorAt(g, tx, ty)) continue;
     g.items.push({ ...it, x: tx, y: ty });
     return true;
   }
@@ -468,7 +536,14 @@ function populate(level: Level, depth: number, floorKey: string, r: Rng) {
     traps.push({ t, x: s.x, y: s.y, found: false });
   }
 
-  return { mons, items, traps, start };
+  // a merchant sets up shop on some floors (never on a boss floor)
+  let vendor: Vendor | null = null;
+  if (depth >= 2 && !isBossFloor(depth) && r.chance(risky ? 0.5 : 0.3)) {
+    const s = freeSpot(anyRoom(), grid, taken, r);
+    if (s) vendor = { x: s.x, y: s.y, stock: stockVendor(r, depth) };
+  }
+
+  return { mons, items, traps, start, vendor };
 }
 
 /* ============================ sight & paths ============================ */
@@ -543,6 +618,7 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
       if (!g.seen[ni] || blocksMove(g.grid[ni])) continue;
       if (g.grid[ni] === LAVA && ni !== goal) continue;
       if (knownTrap.has(ni) && ni !== goal) continue;
+      if (vendorAt(g, nx, ny) && ni !== goal) continue;
       prev[ni] = cur; q.push(ni);
     }
   }
@@ -582,6 +658,7 @@ export function startStats(meta: Meta, cls: ClassId): StartStats {
     greed: 1 + 0.2 * (u.greed || 0),
     embers: c.embers, waystones: c.waystones, weapon: c.weapon,
     relics: { ...c.relics },
+    mana: c.mana,
   };
 }
 
@@ -592,6 +669,7 @@ export const normalizeStart = (st: Partial<StartStats> & Pick<StartStats, "maxHp
   maxHp: st.maxHp, atk: st.atk, def: st.def, sight: st.sight, tonics: st.tonics, greed: st.greed,
   embers: st.embers ?? 0, waystones: st.waystones ?? 0, weapon: st.weapon ?? -1,
   relics: { ...(st.relics ?? {}) },
+  mana: st.mana ?? 0,
 });
 
 /* everyone gets the same hero in the daily, picked by the day's seed */
@@ -628,12 +706,13 @@ export function newRun(s: RunSetup): Game {
     p: { x: pop.start.x, y: pop.start.y },
     hp: s.start.maxHp, maxHp: s.start.maxHp, atk: s.start.atk, def: s.start.def, sight: s.start.sight,
     weapon: s.start.weapon >= 0 ? { ...WEAPONS[s.start.weapon] } : null, armor: null,
-    inv: { tonic: s.start.tonics, ember: s.start.embers, waystone: s.start.waystones, key: 0 },
+    inv: { tonic: s.start.tonics, ember: s.start.embers, waystone: s.start.waystones, key: 0, frost: 0, storm: 0 },
     potions: POTION_COLORS.map(() => 0),
     potionMap: pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
     known: POTION_EFFECTS.map(() => false),
     hidden: 0, relics: { ...s.start.relics }, killsSinceEmber: 0, perils: 0, wardens: 0, chests: 0,
     webbed: 0, marks: [], dex: freshDex(),
+    mana: s.start.mana, maxMana: s.start.mana, manaTick: 0, train: [0, 0, 0], spent: 0, vendor: pop.vendor, fx: [],
     level: 1, xp: 0, next: 12,
     echoes: 0, greed: s.start.greed, kills: 0, turns: 0,
     log: [s.mode === "daily"
@@ -655,6 +734,7 @@ export function descend(g: Game, choice: "s" | "r") {
   const pop = populate(lvl, g.depth, g.floorKey, fr);
   g.grid = lvl.grid;
   g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps; g.hazards = []; g.marks = []; g.webbed = 0;
+  g.vendor = pop.vendor;
   g.seen = new Uint8Array(MW * MH);
   g.p = { x: pop.start.x, y: pop.start.y };
   g.path = null;
@@ -711,6 +791,7 @@ function grantXp(g: Game, n: number) {
     g.next = Math.round(g.next * 1.55);
     g.maxHp += 5; g.hp = Math.min(g.maxHp, g.hp + 8);
     if (g.level % 2 === 0) g.atk += 1;
+    if (g.maxMana > 0) { g.maxMana += 1; g.mana += 1; }
     say(g, `You steady. Level ${g.level}.`);
   }
 }
@@ -769,7 +850,7 @@ function killMon(g: Game, m: Mon) {
 function splitSlime(g: Game, m: Mon) {
   if (!m.splits || m.gen >= 2 || m.hp < 4) return;
   const spot = g.rng.shuffle(DIRS8.map(([dx, dy]) => ({ x: m.x + dx, y: m.y + dy }))).find(s =>
-    inB(s.x, s.y) && !blocksMove(g.grid[idx(s.x, s.y)]) && g.grid[idx(s.x, s.y)] !== LAVA && !(s.x === g.p.x && s.y === g.p.y)
+    inB(s.x, s.y) && !blocksMove(g.grid[idx(s.x, s.y)]) && g.grid[idx(s.x, s.y)] !== LAVA && !vendorAt(g, s.x, s.y) && !(s.x === g.p.x && s.y === g.p.y)
     && !g.mons.some(o => o.x === s.x && o.y === s.y));
   if (!spot) return;
   const half = Math.floor(m.hp / 2);
@@ -780,8 +861,8 @@ function splitSlime(g: Game, m: Mon) {
   say(g, `The ${m.name} splits in two!`);
 }
 
-function strike(g: Game, m: Mon, flash: Flash, verb: string) {
-  const d = dmgRoll(g.rng, totalAtk(g), m.def);
+function strike(g: Game, m: Mon, flash: Flash, verb: string, mul = 1) {
+  const d = Math.max(1, Math.round(dmgRoll(g.rng, totalAtk(g), m.def) * mul));
   m.hp -= d;
   flash(idx(m.x, m.y), "hit");
   if (m.hp <= 0) { killMon(g, m); return false; }
@@ -791,12 +872,15 @@ function strike(g: Game, m: Mon, flash: Flash, verb: string) {
 
 export function playerAttack(g: Game, m: Mon, flash: Flash, ranged = false) {
   m.alerted = true;
-  const verb = !ranged ? "You hit" : g.start.cls === "ranger" ? "Your arrow hits" : "You strike";
-  if (!strike(g, m, flash, verb)) return;
+  const archer = ranged && g.start.cls === "ranger";
+  const verb = !ranged ? "You hit" : archer ? "Your arrow hits" : "You strike";
+  const mul = ranged ? 0.8 : 1;   // hitting from a distance is safer, so it hits a little softer
+  if (ranged) g.fx.push({ k: archer ? "arrow" : "thrust", from: { ...g.p }, to: { x: m.x, y: m.y } });
+  if (!strike(g, m, flash, verb, mul)) return;
   const twin = relicVal(g, "twin");
   if (twin && g.rng.chance(twin / 100)) {
     say(g, "Quicksilver! You strike again.");
-    if (!strike(g, m, flash, verb)) return;
+    if (!strike(g, m, flash, verb, mul)) return;
   }
   splitSlime(g, m);
 }
@@ -807,10 +891,10 @@ export function revealMimic(g: Game, m: Mon) {
   say(g, "The chest has teeth! It's a MIMIC!");
 }
 
-/* the player was hit by m: thorns bite back, magma erupts underneath it */
+/* the player was hit in melee by m: thorns bite back, magma erupts underneath it */
 function onPlayerHit(g: Game, m: Mon, melee: boolean, flash: Flash) {
   const magma = g.relics.magma;
-  if (magma) {
+  if (magma && melee) {
     const dmg = RELICS.magma.values[magma - 1];
     const turns = magma + 1;
     const h = g.hazards.find(o => o.x === m.x && o.y === m.y);
@@ -832,7 +916,7 @@ function freeAround(g: Game, c: Pt): Pt[] {
     const x = c.x + dx, y = c.y + dy;
     if (!inB(x, y)) continue;
     const v = g.grid[idx(x, y)];
-    if (blocksMove(v) || v === LAVA || (x === g.p.x && y === g.p.y) || g.mons.some(o => o.x === x && o.y === y)) continue;
+    if (blocksMove(v) || v === LAVA || (x === g.p.x && y === g.p.y) || vendorAt(g, x, y) || g.mons.some(o => o.x === x && o.y === y)) continue;
     out.push({ x, y });
   }
   return g.rng.shuffle(out);
@@ -872,6 +956,8 @@ function bossAct(g: Game, m: Mon, aware: boolean, dist: number, flash: Flash): b
     m.charge = 0; m.cd = 0; g.marks = [];
     for (const [x, y] of marks) flash(idx(x, y), "hit");
     say(g, kind === 1 ? `The ${m.name} SLAMS the ground!` : `The ${m.name}'s beam sears the line!`);
+    if (kind === 1) g.fx.push({ k: "slam", from: { x: m.x, y: m.y }, to: { x: m.x, y: m.y } });
+    else if (marks.length) g.fx.push({ k: "beam", from: { x: marks[0][0], y: marks[0][1] }, to: { x: marks[marks.length - 1][0], y: marks[marks.length - 1][1] } });
     if (marks.some(([x, y]) => x === g.p.x && y === g.p.y)) {
       const d = Math.round(m.atk * (kind === 1 ? 1.7 : 1.5));
       say(g, `It catches you. -${d}.`);
@@ -898,6 +984,7 @@ function bossAct(g: Game, m: Mon, aware: boolean, dist: number, flash: Flash): b
         m.cd = 0;
         if (g.webbed <= 0 && dist >= 2 && dist <= 5 && sees) {
           for (const pt of between(m.x, m.y, g.p.x, g.p.y)) flash(idx(pt.x, pt.y), "arrow");
+          g.fx.push({ k: "web", from: { x: m.x, y: m.y }, to: { ...g.p } });
           g.webbed = 3;
           say(g, "The Broodmother spits a web! You're stuck for a moment.");
           return true;
@@ -949,7 +1036,7 @@ function bossAct(g: Game, m: Mon, aware: boolean, dist: number, flash: Flash): b
         for (let k = 0; k < 2; k++) {
           const nx = g.p.x + Math.sign(m.x - g.p.x), ny = g.p.y + Math.sign(m.y - g.p.y);
           const v = g.grid[idx(nx, ny)];
-          if (blocksMove(v) || v === LAVA || g.mons.some(o => o.x === nx && o.y === ny)) break;
+          if (blocksMove(v) || v === LAVA || vendorAt(g, nx, ny) || g.mons.some(o => o.x === nx && o.y === ny)) break;
           g.p = { x: nx, y: ny };
           pulled++;
         }
@@ -969,6 +1056,7 @@ const shotName = (m: Mon) => m.kind === "lich" ? "bolt" : m.kind === "eye" ? "ga
 export function monsterTurn(g: Game, flash: Flash) {
   for (const m of [...g.mons]) {
     if (!g.mons.includes(m) || m.disguised) continue;
+    if (m.frozen > 0) { m.frozen -= 1; continue; }
     if (m.slow) { m.tick = (m.tick + 1) % 2; if (m.tick === 1) continue; }
     const dist = cheb(m, g.p);
     const canSee = m.phase || los(g.grid, m.x, m.y, g.p.x, g.p.y);
@@ -989,7 +1077,8 @@ export function monsterTurn(g: Game, flash: Flash) {
       continue;
     }
 
-    if (m.ranged && aware && dist >= 2 && dist <= 5 && los(g.grid, m.x, m.y, g.p.x, g.p.y)) {
+    if (m.ranged && aware && dist >= 2 && dist <= 4 && los(g.grid, m.x, m.y, g.p.x, g.p.y)) {
+      g.fx.push({ k: m.kind === "lich" ? "bolt" : m.kind === "eye" ? "gaze" : "arrow", from: { x: m.x, y: m.y }, to: { ...g.p } });
       for (const pt of between(m.x, m.y, g.p.x, g.p.y)) flash(idx(pt.x, pt.y), "arrow");
       if (g.rng.chance(0.25)) { say(g, `The ${m.name}'s ${shotName(m)} misses you.`); continue; }
       const d = dmgRoll(g.rng, m.atk, m.pierce ? 0 : totalDef(g));
@@ -1004,7 +1093,7 @@ export function monsterTurn(g: Game, flash: Flash) {
     const passable = (tx: number, ty: number) => m.phase
       ? tx > 0 && ty > 0 && tx < MW - 1 && ty < MH - 1
       : inB(tx, ty) && !blocksMove(g.grid[idx(tx, ty)]) && (g.grid[idx(tx, ty)] !== LAVA || m.fireproof);
-    const free = (tx: number, ty: number) => passable(tx, ty) && !(tx === g.p.x && ty === g.p.y)
+    const free = (tx: number, ty: number) => passable(tx, ty) && !(tx === g.p.x && ty === g.p.y) && !vendorAt(g, tx, ty)
       && !g.mons.some(o => o !== m && o.x === tx && o.y === ty);
 
     const chase = () => {
@@ -1057,6 +1146,7 @@ export function endTurn(g: Game, flash: Flash) {
   g.turns += 1;
   if (g.hidden > 0) { g.hidden -= 1; if (g.hidden === 0) say(g, "The shadow slips off you."); }
   if (g.webbed > 0) { g.webbed -= 1; if (g.webbed === 0) say(g, "You tear free of the web."); }
+  if (g.maxMana > 0 && g.mana < g.maxMana && ++g.manaTick >= 2) { g.manaTick = 0; g.mana += 1; }
   g.vis = computeFov(g);
   noteSeen(g);
   if (!g.dead) spotTraps(g);
@@ -1140,7 +1230,12 @@ export function pickUp(g: Game) {
   const it = g.items.find(i => i.t !== "chest" && i.x === g.p.x && i.y === g.p.y);
   if (!it) return;
   g.items = g.items.filter(i => i !== it);
-  if (it.t === "tonic" || it.t === "ember" || it.t === "waystone" || it.t === "key") {
+  receive(g, it);
+}
+
+/* an item arrives in your hands, from the floor or a merchant */
+function receive(g: Game, it: Omit<Item, "x" | "y">) {
+  if (it.t === "tonic" || it.t === "ember" || it.t === "waystone" || it.t === "key" || it.t === "frost" || it.t === "storm") {
     g.inv[it.t] += 1; say(g, `You pocket a ${it.name}.`);
   } else if (it.t === "potion") {
     const c = it.color ?? 0;
@@ -1231,8 +1326,14 @@ export function drinkPotion(g: Game, color: number) {
 export function burnEmber(g: Game, flash: Flash) {
   if (g.inv.ember <= 0) return;
   g.inv.ember -= 1;
+  emberBurst(g, flash, "The scroll flares at nothing.");
+}
+
+/* fire on every monster in sight (ember scroll, Ember Burst spell) */
+function emberBurst(g: Game, flash: Flash, fizzle: string) {
   const targets = g.mons.filter(m => g.vis.has(idx(m.x, m.y)));
-  if (!targets.length) { say(g, "The scroll flares at nothing."); return; }
+  g.fx.push({ k: "burst", from: { ...g.p }, to: { ...g.p } });
+  if (!targets.length) { say(g, fizzle); return; }
   say(g, "Fire runs the room.");
   for (const m of targets) {
     if (m.disguised) revealMimic(g, m);
@@ -1244,17 +1345,133 @@ export function burnEmber(g: Game, flash: Flash) {
   }
 }
 
+/* freeze everything within 2 tiles (Frost Nova spell, frost scroll) */
+function frostNova(g: Game, flash: Flash) {
+  g.fx.push({ k: "frost", from: { ...g.p }, to: { ...g.p } });
+  const hit = g.mons.filter(m => !m.disguised && cheb(m, g.p) <= 2);
+  if (!hit.length) { say(g, "Frost spreads across the floor, but nothing is close enough."); return; }
+  say(g, hit.length === 1 ? `The ${hit[0].name} freezes solid!` : "Everything around you freezes solid!");
+  for (const m of hit) {
+    m.alerted = true;
+    m.frozen = Math.max(m.frozen, m.boss ? 1 : 3);
+    m.hp -= 2;
+    flash(idx(m.x, m.y), "hit");
+    if (m.hp <= 0) killMon(g, m);
+  }
+}
+
+export function readFrost(g: Game, flash: Flash) {
+  if (g.inv.frost <= 0) return;
+  g.inv.frost -= 1;
+  frostNova(g, flash);
+}
+
+/* lightning jumps between the three nearest monsters you can see */
+export function readStorm(g: Game, flash: Flash) {
+  if (g.inv.storm <= 0) return;
+  g.inv.storm -= 1;
+  const targets = g.mons.filter(m => !m.disguised && g.vis.has(idx(m.x, m.y)))
+    .sort((a, b) => cheb(a, g.p) - cheb(b, g.p) || a.y - b.y || a.x - b.x).slice(0, 3);
+  if (!targets.length) { say(g, "Thunder rolls, but there's nothing to strike."); return; }
+  g.fx.push({ k: "zap", from: { ...g.p }, to: { x: targets[targets.length - 1].x, y: targets[targets.length - 1].y },
+              path: [{ ...g.p }, ...targets.map(m => ({ x: m.x, y: m.y }))] });
+  say(g, "Lightning leaps from the scroll!");
+  for (const m of targets) {
+    m.alerted = true;
+    m.hp -= g.rng.range(10, 16) + g.depth;
+    flash(idx(m.x, m.y), "hit");
+    if (m.hp <= 0) killMon(g, m);
+  }
+}
+
+export function canFirebolt(g: Game, m: Mon) {
+  const dist = cheb(m, g.p);
+  return dist >= 1 && dist <= FIREBOLT_RANGE && g.vis.has(idx(m.x, m.y)) && los(g.grid, g.p.x, g.p.y, m.x, m.y);
+}
+
+function castSpell(g: Game, id: SpellId, target: Pt | null, flash: Flash): boolean {
+  const spell = SPELLS[id];
+  if (!spell || g.mana < spell.cost) return false;
+  if (id === "f") {
+    const m = target && g.mons.find(o => o.x === g.p.x + target.x && o.y === g.p.y + target.y);
+    if (!m || !canFirebolt(g, m)) return false;
+    g.mana -= spell.cost;
+    g.fx.push({ k: "fire", from: { ...g.p }, to: { x: m.x, y: m.y } });
+    if (m.disguised) revealMimic(g, m);
+    m.alerted = true;
+    const d = dmgRoll(g.rng, totalAtk(g) + 4 + Math.floor(g.depth / 2), Math.floor(m.def / 2));
+    m.hp -= d;
+    flash(idx(m.x, m.y), "hit");
+    if (m.hp <= 0) killMon(g, m); else say(g, `Your firebolt scorches the ${m.name} for ${d}.`);
+    return true;
+  }
+  g.mana -= spell.cost;
+  if (id === "n") frostNova(g, flash);
+  else if (id === "e") emberBurst(g, flash, "Flames roar out, but nothing is there to burn.");
+  else if (id === "b") {
+    const spots: number[] = [];
+    for (let i = 0; i < MW * MH; i++) {
+      const x = i % MW, y = (i / MW) | 0;
+      const d = Math.max(Math.abs(x - g.p.x), Math.abs(y - g.p.y));
+      if (d < 3 || d > 6 || !g.seen[i] || blocksMove(g.grid[i]) || g.grid[i] === LAVA || vendorAt(g, x, y)) continue;
+      if (g.mons.some(o => o.x === x && o.y === y)) continue;
+      spots.push(i);
+    }
+    const safe = spots.filter(i => !g.mons.some(o => !o.disguised && Math.max(Math.abs(o.x - i % MW), Math.abs(o.y - ((i / MW) | 0))) <= 2));
+    const pool = safe.length ? safe : spots;
+    if (!pool.length) { say(g, "There's nowhere to blink to."); return true; }
+    const t = g.rng.pick(pool);
+    const from = { ...g.p };
+    g.p = { x: t % MW, y: (t / MW) | 0 };
+    g.fx.push({ k: "blink", from, to: { ...g.p } });
+    say(g, "You blink through the air.");
+    enterTile(g, flash);
+  }
+  return true;
+}
+
+/* buying from the merchant next to you */
+function buy(g: Game, slot: number): boolean {
+  const v = g.vendor;
+  if (!v || cheb(v, g.p) > 1) return false;
+  const s = v.stock[slot];
+  if (!s || s.sold || g.echoes < s.price) return false;
+  g.echoes -= s.price;
+  g.spent += s.price;
+  s.sold = true;
+  // merchants label their potions, so buying one teaches you what that color does
+  if (s.item.t === "potion" && s.item.color !== undefined) g.known[g.potionMap[s.item.color]] = true;
+  receive(g, s.item);
+  return true;
+}
+
+/* training on the stairs before you go down */
+function trainAt(g: Game, k: number): boolean {
+  if (!isStairs(g.grid[idx(g.p.x, g.p.y)]) || !TRAINING[k]) return false;
+  const cost = trainCost(k, g.train[k]);
+  if (g.echoes < cost) return false;
+  g.echoes -= cost;
+  g.spent += cost;
+  g.train[k] += 1;
+  if (k === 0) { g.maxHp += 6; g.hp += 6; say(g, "You stretch and steady your breathing. +6 max health."); }
+  else if (k === 1) { g.atk += 1; say(g, "You sharpen your edge. +1 attack."); }
+  else { g.def += 1; say(g, "You tighten every strap. +1 armor."); }
+  return true;
+}
+
 export function castWaystone(g: Game, flash?: Flash) {
   if (g.inv.waystone <= 0) return;
   g.inv.waystone -= 1;
   const spots: number[] = [];
-  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && !blocksMove(g.grid[i]) && g.grid[i] !== LAVA) spots.push(i);
+  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && !blocksMove(g.grid[i]) && g.grid[i] !== LAVA && !vendorAt(g, i % MW, (i / MW) | 0)) spots.push(i);
   const far = spots.filter(i => {
     const dx = i % MW - g.p.x, dy = ((i / MW) | 0) - g.p.y;
     return dx * dx + dy * dy > 49 && !g.mons.some(m => idx(m.x, m.y) === i);
   });
   const t = g.rng.pick(far.length ? far : spots);
+  const from = { ...g.p };
   g.p = { x: t % MW, y: (t / MW) | 0 };
+  g.fx?.push({ k: "blink", from, to: { ...g.p } });
   say(g, "The waystone pulls, and the room changes.");
   enterTile(g, flash);
 }
@@ -1263,7 +1480,9 @@ export function castWaystone(g: Game, flash?: Flash) {
 /* Every player decision is a short string, so a whole run is a list of them:
      m0..m7   step / bump-attack in DIRS8 direction
      a<dx>.<dy> reach attack at an offset (Reaching Gauntlet)
-     w wait · t tonic · p<c> potion · e ember · y waystone · d take the stairs */
+     w wait · t tonic · p<c> potion · e ember · q frost scroll · z storm scroll · y waystone
+     c<spell> cast (cf<dx>.<dy> aims a firebolt) · b<slot> buy from a merchant · u<k> train on the stairs
+     d take the stairs.  Buying, training and stairs don't give the monsters a turn. */
 
 export const stepAction = (dx: number, dy: number) => `m${DIRS8.findIndex(d => d[0] === dx && d[1] === dy)}`;
 
@@ -1281,7 +1500,7 @@ function doStep(g: Game, k: number, flash: Flash): boolean {
   const m = g.mons.find(o => o.x === tx && o.y === ty);
   if (m?.disguised) { revealMimic(g, m); return true; }
   if (m) { playerAttack(g, m, flash); return true; }
-  if (blocksMove(g.grid[idx(tx, ty)])) return false;
+  if (blocksMove(g.grid[idx(tx, ty)]) || vendorAt(g, tx, ty)) return false;
   if (g.webbed > 0) { say(g, "You struggle against the web."); return true; }
   g.p = { x: tx, y: ty };
   enterTile(g, flash);
@@ -1300,9 +1519,16 @@ function doReach(g: Game, dx: number, dy: number, flash: Flash): boolean {
    Legal actions are appended to g.actions, which is the run's replay. */
 export function applyAction(g: Game, a: string, flash: Flash): boolean {
   if (g.dead) return false;
+  g.fx = [];
   const arg = a.slice(1);
   let ok = true;
   switch (a[0]) {
+    case "b": case "u": {
+      // shopping and training happen between moves
+      if (!(a[0] === "b" ? buy(g, Number(arg)) : trainAt(g, Number(arg)))) return false;
+      g.actions.push(a);
+      return true;
+    }
     case "d": {
       const tile = g.grid[idx(g.p.x, g.p.y)];
       if (!isStairs(tile)) return false;
@@ -1317,6 +1543,14 @@ export function applyAction(g: Game, a: string, flash: Flash): boolean {
     case "p": ok = (g.potions[Number(arg)] ?? 0) > 0; if (ok) drinkPotion(g, Number(arg)); break;
     case "e": ok = g.inv.ember > 0; if (ok) burnEmber(g, flash); break;
     case "y": ok = g.inv.waystone > 0; if (ok) castWaystone(g, flash); break;
+    case "q": ok = g.inv.frost > 0; if (ok) readFrost(g, flash); break;
+    case "z": ok = g.inv.storm > 0; if (ok) readStorm(g, flash); break;
+    case "c": {
+      const id = arg[0] as SpellId;
+      const t = id === "f" ? arg.slice(1).split(".").map(Number) : null;
+      ok = castSpell(g, id, t ? { x: t[0], y: t[1] } : null, flash);
+      break;
+    }
     default: return false;
   }
   if (!ok) return false;
@@ -1339,8 +1573,8 @@ function unrle(s: string) {
   return out;
 }
 
-/* kind, x, y, hp, tick, then (v2+) variant, weapon, armor, split gen, flags, (v4+) boss cooldown, boss charge */
-type SavedMon = [string, number, number, number, number, number?, number?, number?, number?, number?, number?, number?];
+/* kind, x, y, hp, tick, then (v2+) variant, weapon, armor, split gen, flags, (v4+) boss cooldown, boss charge, (v5+) frozen */
+type SavedMon = [string, number, number, number, number, number?, number?, number?, number?, number?, number?, number?, number?];
 /* type, x, y, number (atk/def/amount/color/tier/locked), name (relic id for relics), chest seed */
 type SavedItem = [ItemType, number, number, number, string, number?];
 
@@ -1364,6 +1598,9 @@ export type SavedRun = {
   // v4: bosses and the bestiary
   wb?: number; mk?: [number, number][]; dx?: Dex;
   id?: string;
+  // v5: spells, training, merchants
+  mn?: [number, number, number]; tr?: number[]; sp?: number;
+  vd?: [number, number, [SavedItem, number, number][]] | null;
 };
 
 const itemNum = (i: Item) =>
@@ -1372,24 +1609,37 @@ const itemNum = (i: Item) =>
   : i.t === "relic" ? i.tier ?? 1
   : i.atk ?? i.def ?? i.amt ?? 0;
 
+function saveItem(i: Item): SavedItem {
+  const row: SavedItem = [i.t, i.x, i.y, itemNum(i), i.t === "relic" ? i.relic! : i.name];
+  if (i.seed !== undefined) row.push(i.seed);
+  return row;
+}
+
+function loadItem([t, x, y, n, name, seed]: SavedItem): Item {
+  const it: Item = { t, x, y, name };
+  if (t === "weapon") it.atk = n;
+  else if (t === "armor") it.def = n;
+  else if (t === "echoes") it.amt = n;
+  else if (t === "potion") it.color = n;
+  else if (t === "chest") { it.locked = n === 1; if (seed !== undefined) it.seed = seed; }
+  else if (t === "relic") { it.relic = name as RelicId; it.tier = n; it.name = RELICS[name as RelicId]?.name ?? name; }
+  return it;
+}
+
 export function serializeRun(g: Game): SavedRun {
   return {
-    ver: 4,
+    ver: 5,
     d: g.depth,
     G: rle(Array.from(g.grid).join("")),
     S: rle(Array.from(g.seen).join("")),
     m: g.mons.map(m => [m.kind, m.x, m.y, m.hp, m.tick || 0, m.variant, m.wpn, m.arm, m.gen,
-                        (m.alerted ? 1 : 0) | (m.disguised ? 2 : 0), m.cd, m.charge]),
-    i: g.items.map(i => {
-      const row: SavedItem = [i.t, i.x, i.y, itemNum(i), i.t === "relic" ? i.relic! : i.name];
-      if (i.seed !== undefined) row.push(i.seed);
-      return row;
-    }),
+                        (m.alerted ? 1 : 0) | (m.disguised ? 2 : 0), m.cd, m.charge, m.frozen]),
+    i: g.items.map(saveItem),
     p: [g.p.x, g.p.y],
     h: [g.hp, g.maxHp, g.atk, g.def, g.sight],
     w: g.weapon ? [g.weapon.name, g.weapon.atk] : null,
     a: g.armor ? [g.armor.name, g.armor.def] : null,
-    v: [g.inv.tonic, g.inv.ember, g.inv.waystone, g.inv.key],
+    v: [g.inv.tonic, g.inv.ember, g.inv.waystone, g.inv.key, g.inv.frost, g.inv.storm],
     x: [g.level, g.xp, g.next],
     e: [g.echoes, g.greed, g.kills, g.turns],
     l: g.log.slice(-3),
@@ -1401,6 +1651,8 @@ export function serializeRun(g: Game): SavedRun {
     cc: [g.wardens, g.chests],
     wb: g.webbed, mk: g.marks.map(([x, y]) => [x, y]), dx: g.dex,
     id: g.id,
+    mn: [g.mana, g.maxMana, g.manaTick], tr: g.train.slice(), sp: g.spent,
+    vd: g.vendor ? [g.vendor.x, g.vendor.y, g.vendor.stock.map(s => [saveItem({ ...s.item, x: 0, y: 0 }), s.price, s.sold ? 1 : 0] as [SavedItem, number, number])] : null,
   };
 }
 
@@ -1423,29 +1675,20 @@ export function deserializeRun(o: SavedRun): Game {
     grid: Uint8Array.from(unrle(o.G).split("").map(Number)),
     seen: Uint8Array.from(unrle(o.S).split("").map(Number)),
     vis: new Set(),
-    mons: o.m.flatMap(([k, x, y, hp, tick, variant, wpn, arm, gen, flags, cd, charge]) => {
+    mons: o.m.flatMap(([k, x, y, hp, tick, variant, wpn, arm, gen, flags, cd, charge, frozen]) => {
       const b = makeMon(k, mDepth, variant ?? 0, wpn ?? -1, arm ?? -1, gen ?? 0);
       if (!b) return [];
-      return [{ ...b, x, y, hp, tick, cd: cd ?? 0, charge: charge ?? 0,
+      return [{ ...b, x, y, hp, tick, cd: cd ?? 0, charge: charge ?? 0, frozen: frozen ?? 0,
                 alerted: !!((flags ?? 0) & 1), disguised: !!((flags ?? 0) & 2) }];
     }),
-    items: o.i.map(([t, x, y, n, name, seed]) => {
-      const it: Item = { t, x, y, name };
-      if (t === "weapon") it.atk = n;
-      else if (t === "armor") it.def = n;
-      else if (t === "echoes") it.amt = n;
-      else if (t === "potion") it.color = n;
-      else if (t === "chest") { it.locked = n === 1; if (seed !== undefined) it.seed = seed; }
-      else if (t === "relic") { it.relic = name as RelicId; it.tier = n; it.name = RELICS[name as RelicId]?.name ?? name; }
-      return it;
-    }),
+    items: o.i.map(loadItem),
     traps: (o.t ?? []).map(([t, x, y, f]) => ({ t, x, y, found: f === 1 })),
     hazards: (o.hz ?? []).map(([x, y, dmg, turns]) => ({ x, y, dmg, turns })),
     p: { x: o.p[0], y: o.p[1] },
     hp: o.h[0], maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4],
     weapon: o.w ? { name: o.w[0], atk: o.w[1] } : null,
     armor: o.a ? { name: o.a[0], def: o.a[1] } : null,
-    inv: { tonic: o.v[0], ember: o.v[1], waystone: o.v[2], key: o.v[3] ?? 0 },
+    inv: { tonic: o.v[0], ember: o.v[1], waystone: o.v[2], key: o.v[3] ?? 0, frost: o.v[4] ?? 0, storm: o.v[5] ?? 0 },
     potions: o.pt ?? POTION_COLORS.map(() => 0),
     potionMap: o.pm ?? pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
     known: o.kn ? o.kn.map(k => k === 1) : POTION_EFFECTS.map(() => false),
@@ -1455,6 +1698,12 @@ export function deserializeRun(o: SavedRun): Game {
     perils: o.pr ?? 0,
     wardens: o.cc?.[0] ?? 0, chests: o.cc?.[1] ?? 0,
     webbed: o.wb ?? 0, marks: (o.mk ?? []).map(([x, y]) => [x, y] as [number, number]),
+    mana: o.mn?.[0] ?? 0, maxMana: o.mn?.[1] ?? 0, manaTick: o.mn?.[2] ?? 0,
+    train: o.tr ? o.tr.slice() : [0, 0, 0], spent: o.sp ?? 0, fx: [],
+    vendor: o.vd ? { x: o.vd[0], y: o.vd[1], stock: o.vd[2].map(([row, price, sold]) => {
+      const { x: _x, y: _y, ...item } = loadItem(row);
+      return { item, price, sold: sold === 1 };
+    }) } : null,
     dex: o.dx ? { seen: { ...o.dx.seen }, kills: { ...o.dx.kills }, relics: { ...o.dx.relics } } : freshDex(),
     level: o.x[0], xp: o.x[1], next: o.x[2],
     echoes: o.e[0], greed: o.e[1], kills: o.e[2], turns: o.e[3],

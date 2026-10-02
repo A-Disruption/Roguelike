@@ -3,9 +3,12 @@ import {
   C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, WEAPONS, POTION_COLORS, POTION_EFFECTS, RULES_VERSION,
   idx, inB, say, totalAtk, totalDef, newRun, freshMeta, applyAction, stepAction,
   canReach, reachOf, bfsPath, potionLabel, relicLabel, relicBlurb, scoreOf, mergeDex,
-  type Game, type Meta, type Upgrade, type Flash, type RunMode,
+  SPELLS, SPELL_IDS, TRAINING, trainCost, canFirebolt, cheb, vendorAt, ARMORS, weaponTier, armorTier,
+  type Game, type Meta, type Upgrade, type Flash, type RunMode, type SpellId, type Item,
 } from "./game/core";
-import { drawMap, playerSprite, potionSprite, relicSprite, spriteCanvas, type GhostMark } from "./game/sprites";
+import { drawMap, drawFx, FX_MS, playerSprite, potionSprite, relicSprite, spriteCanvas, itemSprite, type GhostMark } from "./game/sprites";
+import type { Fx } from "./game/core";
+import { Modal, modalBtn } from "./ui/Modal";
 import { zoneOf, zoneIndex } from "./game/zones";
 import {
   loadMeta, saveMeta, loadRun, saveRun, clearRun, loadActive, requestPersist, isStandalone, isIOS,
@@ -31,31 +34,132 @@ const runFrom = (r: StartedRun) => newRun({
   id: r.runId, mode: r.mode, seed: r.seed, day: r.day, start: r.start, ranked: r.ranked, startedAt: r.startedAt,
 });
 
-/* ============================ potion tray ============================ */
+/* ============================ items, spells, shop ============================ */
 
-function PotionTray({ g, onDrink, onClose }: { g: Game; onDrink: (color: number) => void; onClose: () => void }) {
-  const held = POTION_COLORS.map((_, c) => c).filter(c => g.potions[c] > 0);
+const SCROLLS: { key: "ember" | "frost" | "storm" | "waystone"; act: string; name: string; blurb: string }[] = [
+  { key: "ember", act: "e", name: "ember scroll", blurb: "burns every monster in sight" },
+  { key: "frost", act: "q", name: "frost scroll", blurb: "freezes everything within 2 tiles" },
+  { key: "storm", act: "z", name: "storm scroll", blurb: "lightning strikes the 3 nearest monsters" },
+  { key: "waystone", act: "y", name: "waystone", blurb: "teleports you somewhere you've been" },
+];
+
+/* what an item does, in a few words (for the merchant) */
+function itemBlurb(g: Game, it: Omit<Item, "x" | "y">) {
+  switch (it.t) {
+    case "tonic": return "heals almost half your health";
+    case "potion": return POTION_EFFECTS[g.potionMap[it.color ?? 0]].blurb;
+    case "weapon": return `+${it.atk} attack${g.weapon ? ` (yours: +${g.weapon.atk})` : ""}`;
+    case "armor": return `+${it.def} armor${g.armor ? ` (yours: +${g.armor.def})` : ""}`;
+    case "relic": return it.relic && it.tier ? relicBlurb(it.relic, it.tier) : "";
+    default: return SCROLLS.find(x => x.key === it.t)?.blurb ?? "";
+  }
+}
+
+function itemTitle(g: Game, it: Omit<Item, "x" | "y">) {
+  if (it.t === "potion") return POTION_EFFECTS[g.potionMap[it.color ?? 0]].name;   // merchants label their potions
+  if (it.t === "relic" && it.relic && it.tier) return relicLabel(it.relic, it.tier);
+  return it.name;
+}
+
+function TrayRow({ icon, title, sub, right, onClick, disabled }: {
+  icon: React.ReactNode; title: string; sub: string; right: string; onClick: () => void; disabled?: boolean;
+}) {
   return (
-    <div style={{ borderTop: `1px solid ${C.memWall}`, padding: "8px 12px 0", display: "flex", flexDirection: "column", gap: 6 }}>
-      {held.length === 0 && <div style={{ fontSize: 13.5, color: C.dim }}>No potions yet. Look for colored bottles.</div>}
-      {held.map(c => {
+    <button className="lb-btn" onClick={onClick} disabled={disabled}
+      style={{ ...act3(C.bone), display: "flex", alignItems: "center", gap: 10, textAlign: "left", padding: "7px 10px", opacity: disabled ? 0.45 : 1 }}>
+      {icon}
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 14.5 }}>{title}</span>
+        <span style={{ display: "block", fontSize: 12, color: C.dim, fontWeight: 400 }}>{sub}</span>
+      </span>
+      <span className="lb-mono" style={{ fontSize: 13, color: C.dim }}>{right}</span>
+    </button>
+  );
+}
+
+function ItemTray({ g, onUse, onClose }: { g: Game; onUse: (action: string) => void; onClose: () => void }) {
+  const potions = POTION_COLORS.map((_, c) => c).filter(c => g.potions[c] > 0);
+  const scrolls = SCROLLS.filter(sc => g.inv[sc.key] > 0);
+  return (
+    <div style={{ borderTop: `1px solid ${C.memWall}`, padding: "8px 12px 0", display: "flex", flexDirection: "column", gap: 5, maxHeight: "38vh", overflowY: "auto" }}>
+      {!potions.length && !scrolls.length && <div style={{ fontSize: 13.5, color: C.dim }}>Nothing to use yet. Look for scrolls and colored bottles.</div>}
+      {scrolls.map(sc => (
+        <TrayRow key={sc.key} icon={<SpriteIcon name={sc.key} size={22} />} title={sc.name} sub={sc.blurb}
+          right={`×${g.inv[sc.key]}`} onClick={() => onUse(sc.act)} />
+      ))}
+      {potions.map(c => {
         const eff = g.potionMap[c];
-        const known = g.known[eff];
-        return (
-          <button key={c} className="lb-btn" onClick={() => onDrink(c)}
-            style={{ ...act3(C.bone), display: "flex", alignItems: "center", gap: 10, textAlign: "left", padding: "8px 10px" }}>
-            <SpriteIcon src={potionSprite(c)} size={22} />
-            <span style={{ flex: 1 }}>
-              <span style={{ display: "block", fontSize: 14.5 }}>{potionLabel(g, c)}</span>
-              <span style={{ display: "block", fontSize: 12, color: C.dim, fontWeight: 400 }}>
-                {known ? POTION_EFFECTS[eff].blurb : "unknown. Drink it to find out!"}
-              </span>
-            </span>
-            <span className="lb-mono" style={{ fontSize: 13, color: C.dim }}>×{g.potions[c]}</span>
-          </button>
-        );
+        return <TrayRow key={c} icon={<SpriteIcon src={potionSprite(c)} size={22} />} title={potionLabel(g, c)}
+          sub={g.known[eff] ? POTION_EFFECTS[eff].blurb : "unknown. Drink it to find out!"} right={`×${g.potions[c]}`} onClick={() => onUse(`p${c}`)} />;
       })}
       <button onClick={onClose} style={{ ...linkBtn, alignSelf: "flex-start" }}>Close</button>
+    </div>
+  );
+}
+
+function SpellTray({ g, onCast, onAim, onClose }: { g: Game; onCast: (id: SpellId) => void; onAim: () => void; onClose: () => void }) {
+  return (
+    <div style={{ borderTop: `1px solid ${C.memWall}`, padding: "8px 12px 0", display: "flex", flexDirection: "column", gap: 5 }}>
+      {SPELL_IDS.map(id => {
+        const sp = SPELLS[id];
+        return <TrayRow key={id} icon={<span style={{ width: 22, height: 22, borderRadius: 11, flexShrink: 0, background: SPELL_COLOR[id] }} />}
+          title={sp.name} sub={sp.blurb} right={`${sp.cost} mana`} disabled={g.mana < sp.cost}
+          onClick={() => (id === "f" ? onAim() : onCast(id))} />;
+      })}
+      <button onClick={onClose} style={{ ...linkBtn, alignSelf: "flex-start" }}>Close</button>
+    </div>
+  );
+}
+
+const SPELL_COLOR: Record<SpellId, string> = { f: "#E9A13B", n: "#9FE0F0", b: "#B6C8F0", e: "#C04A3B" };
+
+function Shop({ g, onBuy, onClose }: { g: Game; onBuy: (slot: number) => void; onClose: () => void }) {
+  const v = g.vendor!;
+  return (
+    <Modal title="The merchant" icon={<SpriteIcon name="vendor" size={40} />} onClose={onClose}
+      actions={<button className="lb-btn" onClick={onClose} style={modalBtn(C.ember, true)}>Done</button>}>
+      <p style={{ margin: "0 0 10px", color: C.dim }}>"Echoes, friend. Everything has a price down here." You have <b className="lb-mono" style={{ color: C.verd }}>{g.echoes}</b>.</p>
+      {v.stock.map((s, i) => {
+        const icon = s.item.t === "potion" ? potionSprite(s.item.color ?? 0) : itemSprite({ ...s.item, x: 0, y: 0 });
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.memWall}`, opacity: s.sold ? 0.45 : 1 }}>
+            <SpriteIcon src={icon} size={28} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 14.5 }}>{itemTitle(g, s.item)}</span>
+              <span style={{ display: "block", fontSize: 12, color: C.dim }}>{itemBlurb(g, s.item)}</span>
+            </span>
+            {s.sold
+              ? <span style={{ fontSize: 12.5, color: C.dim }}>sold</span>
+              : <button className="lb-btn" disabled={g.echoes < s.price} onClick={() => onBuy(i)}
+                  style={{ ...act3(g.echoes < s.price ? C.memGlyph : C.verd), padding: "7px 10px", minWidth: 64 }}>
+                  <span className="lb-mono">{s.price}</span>
+                </button>}
+          </div>
+        );
+      })}
+    </Modal>
+  );
+}
+
+/* on the stairs: spend this run's echoes on training before going down */
+function TrainBar({ g, onTrain }: { g: Game; onTrain: (k: number) => void }) {
+  return (
+    <div style={{ borderTop: `1px solid ${C.memWall}`, padding: "7px 10px 0" }}>
+      <div style={{ fontSize: 12, color: C.dim, marginBottom: 5 }}>
+        Train before you go down · <span className="lb-mono" style={{ color: C.verd }}>{g.echoes}</span> echoes
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {TRAINING.map((t, k) => {
+          const cost = trainCost(k, g.train[k]);
+          return (
+            <button key={k} className="lb-btn" disabled={g.echoes < cost} onClick={() => onTrain(k)}
+              style={{ ...act3(g.echoes < cost ? C.memGlyph : C.bone), flex: 1, padding: "6px 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+              <span style={{ fontSize: 12.5 }}>{t.blurb}</span>
+              <span className="lb-mono" style={{ fontSize: 11.5, color: g.echoes < cost ? C.memGlyph : C.verd }}>{cost}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -241,7 +345,13 @@ export default function LampblackDepths() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [installed] = useState(isStandalone);
-  const [tray, setTray] = useState(false);
+  const [tray, setTray] = useState<"none" | "items" | "spells">("none");
+  const [aiming, setAiming] = useState(false);
+  const [shop, setShop] = useState(false);
+  const fxCanvas = useRef<HTMLCanvasElement>(null);
+  const fxQueue = useRef<{ fx: Fx; start: number; dur: number; camX: number; camY: number }[]>([]);
+  const fxRaf = useRef(0);
+  const tsRef = useRef(30);
   const [relicsOpen, setRelicsOpen] = useState(false);
   const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -370,8 +480,42 @@ export default function LampblackDepths() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const camX = Math.max(0, Math.min(MW - VW, g.p.x - (VW >> 1)));
     const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
-    drawMap(ctx, g, ts, camX, camY, flashes, ghostMarks(g), targetsOf(g), Date.now());
+    const targets = aiming ? new Set(g.mons.filter(m => !m.disguised && canFirebolt(g, m)).map(m => idx(m.x, m.y))) : targetsOf(g);
+    drawMap(ctx, g, ts, camX, camY, flashes, ghostMarks(g), targets, Date.now());
   });
+
+  /* ---------------- effects: projectiles and bursts fly over the map ---------------- */
+
+  tsRef.current = ts;
+  const fxTick = useCallback(() => {
+    const cv = fxCanvas.current;
+    if (!cv) { fxRaf.current = 0; return; }
+    const ts2 = tsRef.current;
+    const dpr = window.devicePixelRatio || 1;
+    const w = VW * ts2, h = VH * ts2;
+    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    const ctx = cv.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const t = performance.now();
+    fxQueue.current = fxQueue.current.filter(q => t < q.start + q.dur);
+    for (const q of fxQueue.current) {
+      if (t < q.start) continue;
+      drawFx(ctx, q.fx, (t - q.start) / q.dur, ts2, q.camX, q.camY);
+    }
+    fxRaf.current = fxQueue.current.length ? requestAnimationFrame(fxTick) : 0;
+  }, []);
+
+  const playFx = useCallback((g: Game) => {
+    if (!g.fx.length) return;
+    const camX = Math.max(0, Math.min(MW - VW, g.p.x - (VW >> 1)));
+    const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
+    const t = performance.now();
+    g.fx.forEach((fx, i) => fxQueue.current.push({ fx, start: t + i * 70, dur: FX_MS[fx.k] ?? 250, camX, camY }));
+    if (!fxRaf.current) fxRaf.current = requestAnimationFrame(fxTick);
+  }, [fxTick]);
+
+  useEffect(() => () => cancelAnimationFrame(fxRaf.current), []);
 
   /* red danger tiles pulse while a boss attack is coming */
   const hasMarks = screen === "game" && !!G.current?.marks.length;
@@ -421,11 +565,12 @@ export default function LampblackDepths() {
     const g = G.current;
     if (!g || g.dead) return false;
     if (!applyAction(g, a, flash)) return false;
-    if (g.dead) { force(); setTimeout(() => finishRun(g), 550); return true; }
+    playFx(g);
+    if (g.dead) { force(); setTimeout(() => finishRun(g), 650); return true; }
     persistRun();
     force();
     return true;
-  }, [flash, finishRun, persistRun]);
+  }, [flash, finishRun, persistRun, playFx]);
 
   const enemyInSight = (g: Game) => g.mons.some(m => !m.disguised && g.vis.has(idx(m.x, m.y)));
 
@@ -453,6 +598,16 @@ export default function LampblackDepths() {
     if (g.path) { stopWalk(); force(); return; }
     const dx = tx - g.p.x, dy = ty - g.p.y;
     const d = Math.max(Math.abs(dx), Math.abs(dy));
+    // aiming a firebolt: tap a monster in range, anywhere else cancels
+    if (aiming) {
+      setAiming(false);
+      const m = g.mons.find(o => o.x === tx && o.y === ty && !o.disguised);
+      if (m && canFirebolt(g, m)) doAction(`cf${dx}.${dy}`);
+      else force();
+      return;
+    }
+    // the merchant: next to them, open the shop; further away, walk over
+    if (vendorAt(g, tx, ty) && d <= 1) { setShop(true); return; }
     if (d === 0) { doAction("w"); return; }
     if (d === 1) { doAction(stepAction(dx, dy)); return; }
     // a monster a few tiles away: shoot it if it's in reach
@@ -469,9 +624,9 @@ export default function LampblackDepths() {
     if (enemyInSight(g)) { doAction(stepAction(path[0].x - g.p.x, path[0].y - g.p.y)); return; }
     g.path = path;
     stepWalk();
-  }, [ts, doAction, stepWalk, stopWalk]);
+  }, [ts, doAction, stepWalk, stopWalk, aiming]);
 
-  const onPotion = (c: number) => { setTray(false); doAction(`p${c}`); };
+  const useItem = (a: string) => { setTray("none"); doAction(a); };
 
   /* ---------------- zone title cards ---------------- */
 
@@ -495,7 +650,9 @@ export default function LampblackDepths() {
     stopWalk();
     G.current = g;
     runs.current[g.mode] = g;
-    setTray(false);
+    setTray("none");
+    setAiming(false);
+    setShop(false);
     setRelicsOpen(false);
     setPaused(false);
     persistRun();
@@ -732,7 +889,8 @@ export default function LampblackDepths() {
   const onStairs = tile === STAIRS || tile === STAIRS_RISK;
   const hpPct = Math.max(0, g.hp / g.maxHp);
   const saveColor = saveState === "failed" ? C.blood : saveState === "saved" ? C.verd : C.memGlyph;
-  const potionCount = g.potions.reduce((a, b) => a + b, 0);
+  const itemCount = g.potions.reduce((a, b) => a + b, 0) + g.inv.ember + g.inv.frost + g.inv.storm + g.inv.waystone;
+  const caster = g.maxMana > 0;
   const boss = g.mons.find(m => m.boss && !m.disguised && g.vis.has(idx(m.x, m.y)));
   const ghostInfo = g.mode === "daily" ? ghostsFor(g.day).map(gh => {
     const { frame, done, died } = ghostAt(gh, g.turns);
@@ -757,6 +915,14 @@ export default function LampblackDepths() {
           <div style={{ height: 4, background: C.memWall, borderRadius: 2, overflow: "hidden" }}>
             <div style={{ width: `${hpPct * 100}%`, height: "100%", background: hpPct < 0.3 ? C.blood : C.ember, transition: "width 160ms" }} />
           </div>
+          {caster && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+              <div style={{ flex: 1, height: 3, background: "#1A2236", borderRadius: 2, overflow: "hidden" }}>
+                <div style={{ width: `${(g.mana / g.maxMana) * 100}%`, height: "100%", background: "#6F9FE8", transition: "width 160ms" }} />
+              </div>
+              <span className="lb-mono" style={{ fontSize: 10.5, color: "#6F9FE8" }}>{g.mana}/{g.maxMana}</span>
+            </div>
+          )}
         </div>
         {g.inv.key > 0 && (
           <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -799,8 +965,12 @@ export default function LampblackDepths() {
       )}
 
       <div ref={mapBox} style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 4, position: "relative" }}>
-        <canvas ref={canvasRef} className="lb-map" onClick={onCanvasTap}
-          style={{ width: VW * ts, height: VH * ts, display: "block" }} />
+        <div style={{ position: "relative", width: VW * ts, height: VH * ts }}>
+          <canvas ref={canvasRef} className="lb-map" onClick={onCanvasTap}
+            style={{ width: VW * ts, height: VH * ts, display: "block" }} />
+          <canvas ref={fxCanvas} aria-hidden="true"
+            style={{ position: "absolute", inset: 0, width: VW * ts, height: VH * ts, pointerEvents: "none" }} />
+        </div>
         {zoneCard && (
           <div key={zoneCard.name + zoneCard.depth} className="lb-zone" aria-live="polite"
             style={{ position: "absolute", left: 16, right: 16, top: "30%", textAlign: "center", pointerEvents: "none",
@@ -818,9 +988,18 @@ export default function LampblackDepths() {
         ))}
       </div>
 
-      {tray && <PotionTray g={g} onDrink={onPotion} onClose={() => setTray(false)} />}
+      {aiming && (
+        <div style={{ padding: "6px 14px", background: "#2A1A0C", color: C.ember, fontSize: 13.5, display: "flex", justifyContent: "space-between" }}>
+          <span>Tap a monster to cast Firebolt</span>
+          <button onClick={() => setAiming(false)} style={{ ...linkBtn, color: C.dim, padding: 0 }}>Cancel</button>
+        </div>
+      )}
 
-      <div style={{ display: "flex", gap: 6, padding: "8px 10px 14px", borderTop: tray ? "none" : `1px solid ${C.memWall}` }}>
+      {tray === "items" && <ItemTray g={g} onUse={useItem} onClose={() => setTray("none")} />}
+      {tray === "spells" && <SpellTray g={g} onCast={id => useItem(`c${id}`)} onAim={() => { setTray("none"); setAiming(true); }} onClose={() => setTray("none")} />}
+      {onStairs && tray === "none" && <TrainBar g={g} onTrain={k => doAction(`u${k}`)} />}
+
+      <div style={{ display: "flex", gap: 6, padding: "8px 10px 14px", borderTop: tray !== "none" || onStairs ? "none" : `1px solid ${C.memWall}` }}>
         {onStairs
           ? <button className="lb-btn" onClick={() => doAction("d")}
               style={{ ...act3(tile === STAIRS_RISK ? "#FFF4E8" : C.void), flex: 1.4, background: tile === STAIRS_RISK ? C.blood : C.ember, border: `1px solid ${tile === STAIRS_RISK ? C.blood : C.ember}`,
@@ -830,12 +1009,12 @@ export default function LampblackDepths() {
             </button>
           : <button className="lb-btn" onClick={() => doAction("w")} style={{ ...act3(C.dim), flex: 1.4 }}>Wait</button>}
         <ActBtn label="Tonic" n={g.inv.tonic} onClick={() => doAction("t")} sprite="tonic" />
-        <ActBtn label="Potions" n={potionCount} onClick={() => setTray(t => !t)} sprite="potion" active={tray} />
-        <ActBtn label="Ember" n={g.inv.ember} onClick={() => doAction("e")} sprite="ember" />
-        <ActBtn label="Waystone" n={g.inv.waystone} onClick={() => doAction("y")} sprite="waystone" />
+        <ActBtn label="Items" n={itemCount} onClick={() => setTray(t => (t === "items" ? "none" : "items"))} sprite="potion" active={tray === "items"} />
+        {caster && <ActBtn label="Spells" n={g.mana} onClick={() => setTray(t => (t === "spells" ? "none" : "spells"))} sprite="ember" active={tray === "spells"} />}
       </div>
 
       {paused && <PauseMenu g={g} onResume={() => setPaused(false)} onCamp={leaveToHub} />}
+      {shop && g.vendor && <Shop g={g} onBuy={i => doAction(`b${i}`)} onClose={() => setShop(false)} />}
     </Shell>
   );
 }
