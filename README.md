@@ -12,6 +12,8 @@ on the device after every move, and it works offline.
 | `src/game/core.ts` | Map generation, monsters, items, relics, combat, actions, save format |
 | `src/game/rng.ts` | Seeded random numbers (no `Math.random` in gameplay) |
 | `src/game/relics.ts` | Relic definitions and tiers |
+| `src/game/classes.ts` | Heroes: stats, starting kit, unlock rules |
+| `src/game/zones.ts` | Zones: colors, terrain, monster pools, wardens |
 | `src/game/replay.ts` | Run records, replay/verification, ghosts, share codes, daily calendar |
 | `src/game/sprites.ts` | 8×8 pixel-art sprites and map drawing |
 | `src/game/storage.ts` | Saving to the device, backup codes |
@@ -28,7 +30,7 @@ on the device after every move, and it works offline.
 npm install
 npm run dev        # http://localhost:5173, also on your LAN for quick looks
 npm run build      # type-check + production build into dist/
-npm test           # headless random-play smoke test
+npm test           # headless random-play + replay test (SEED=n npm test to reproduce a failure)
 ```
 
 ## Putting it on the phone (one-time setup)

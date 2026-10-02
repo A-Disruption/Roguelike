@@ -2,6 +2,20 @@
 
 Tick things off as they ship. Ideas can move between sections or be crossed out (`~~like this~~`) if we decide against them.
 
+## Done — v1.4 "Themed zones"
+
+- [x] **Five zones, four floors each** — The Cellars → The Caves → The Flooded Crypt → The Forge → The Abyss, each with its own colors and title card
+- [x] **Zone terrain** — ragged cave walls, pools of water in the crypt, lava in the forge (burns you, monsters avoid it, never blocks the stairs), the Abyss shrinks your sight
+- [x] **Zone monsters** — cave spiders (move twice), drowned ones (slow, tough), fire imps (explode when killed), void eyes (shots ignore armor)
+- [x] **A warden for every zone** — Cellar, Stone, Drowned, Forge and Void Wardens guard each zone's last floor
+- [x] **Zone guide** on the main screen; zones you haven't reached stay "???"
+
+## Done — v1.3 "Character classes"
+
+- [x] **Five heroes** — Wanderer, Ranger, Ember Mage, Knight, Rogue, each with their own stats, kit and built-in relic powers
+- [x] **Unlocks** — reach depth 4 (Ranger), defeat 40 monsters (Ember Mage), slay a warden (Knight), open 8 chests (Rogue)
+- [x] **Hero of the day** — the daily dungeon picks one hero from the date, the same for everyone
+
 ## Done — v1.2 "Relics & the daily"
 
 - [x] **Relics in three tiers** — 10 relics (Bloodthirst Fang, Reaching Gauntlet, Magma Heart, Thorn Bracer, Lucky Coin, Feather Boots, Kindling Pouch, Phoenix Feather, Watcher's Lantern, Quicksilver Ring). Found in chests, on perilous floors and on wardens; higher tiers upgrade ones you have
@@ -43,9 +57,8 @@ The client side is already shaped for this: `RunRecord` in `src/game/replay.ts` 
 
 ## Big features (each its own pass)
 
-- [ ] **Themed zones** — cellars → caves → flooded crypt → lava forge, each with their own monsters and colors
-- [ ] **Character classes** — unlockable heroes with different starts (archer, ember mage…)
-- [ ] **Unique boss fights** every 5 floors, each with special attacks
+- [ ] **Unique boss fights** — give each zone's warden its own special attacks (they're recolored wardens today)
+- [ ] **More heroes** — e.g. a Beastmaster with a pet, a Cleric who heals
 
 ## Rules changes checklist
 

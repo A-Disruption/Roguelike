@@ -48,9 +48,10 @@
       ["kingsbane + grave-iron", playerSprite({ weapon: WEAPONS[4], armor: ARMORS[4] })],
       ["long quiet + grave-iron", playerSprite({ weapon: WEAPONS[5], armor: ARMORS[4] })],
     ]);
-    const kinds = ["rat","bat","goblin","slime","archer","skeleton","ghost","wraith","ogre","warden","mimic"];
+    const kinds = ["rat","bat","goblin","slime","archer","skeleton","ghost","wraith","ogre","warden","mimic","spider","drowned","imp","eye"];
+    section("Zone wardens", [1, 2, 3, 4, 5].map(v => [VARIANTS.warden[v - 1].fullName, mon("warden", v)]));
     section("Monsters", kinds.map(k => [k, mon(k)]));
-    section("Color variants", Object.entries(VARIANTS).flatMap(([k, vs]) => vs.map((v, i) => [`${v.prefix} ${k}`, mon(k, i + 1)])));
+    section("Color variants", Object.entries(VARIANTS).filter(([k]) => k !== "warden").flatMap(([k, vs]) => vs.map((v, i) => [`${v.prefix} ${k}`, mon(k, i + 1)])));
     section("Monsters with gear", [
       ["goblin, knife", mon("goblin", 0, 0)], ["goblin, sword+rags", mon("goblin", 0, 1, 0)],
       ["cave goblin, spear+leather", mon("goblin", 1, 2, 1)], ["archer, leather", mon("archer", 0, -1, 1)],

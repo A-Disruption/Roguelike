@@ -1,6 +1,7 @@
 import { Rng, hashStr } from "./rng.ts";
 import { RELICS, RELIC_IDS, TIER_NAMES, type RelicId } from "./relics.ts";
 import { CLASS_IDS, classOf, type ClassId } from "./classes.ts";
+import { zoneOf, zoneIndex, isBossFloor } from "./zones.ts";
 
 /* ============================ constants ============================ */
 
@@ -10,7 +11,7 @@ export const RULES_VERSION = 3;
 
 export const MW = 31, MH = 29;          // map size
 export const VW = 11, VH = 13;          // viewport in tiles
-export const WALL = 0, FLOOR = 1, STAIRS = 2, STAIRS_RISK = 3;
+export const WALL = 0, FLOOR = 1, STAIRS = 2, STAIRS_RISK = 3, WATER = 4, LAVA = 5;
 export const isStairs = (v: number) => v === STAIRS || v === STAIRS_RISK;
 
 export const C = {
@@ -31,6 +32,9 @@ type MonBase = {
   k: string; g: string; name: string; hp: number; atk: number; def: number; xp: number; ech: number;
   min: number; max?: number; erratic?: boolean; pierce?: boolean; slow?: boolean; boss?: boolean;
   ranged?: boolean;      // shoots arrows from a distance
+  fast?: boolean;        // takes two steps when chasing
+  explodes?: boolean;    // bursts into flame when it dies
+  fireproof?: boolean;   // walks on lava
   phase?: boolean;       // drifts through walls
   splits?: boolean;      // splits in two when hit
   gear?: "both" | "armor"; // can spawn carrying a weapon and/or armor
@@ -48,12 +52,18 @@ const MONSTERS: MonBase[] = [
   { k:"wraith",  g:"w", name:"wraith",      hp:15, atk:9,  def:0, xp:14, ech:10, min:6,  max:99, pierce:true },
   { k:"ogre",    g:"O", name:"ogre",        hp:36, atk:15, def:2, xp:22, ech:16, min:8,  max:99, slow:true, gear:"both" },
   { k:"mimic",   g:"m", name:"mimic",       hp:22, atk:8,  def:1, xp:15, ech:20, min:3,  noPool:true },
+  /* zone monsters */
+  { k:"spider",  g:"x", name:"cave spider", hp:10, atk:5,  def:0, xp:7,  ech:5,  min:5,  fast:true },
+  { k:"drowned", g:"z", name:"drowned one", hp:30, atk:9,  def:1, xp:14, ech:11, min:9,  slow:true },
+  { k:"imp",     g:"i", name:"fire imp",    hp:14, atk:9,  def:1, xp:15, ech:12, min:13, erratic:true, explodes:true, fireproof:true },
+  { k:"eye",     g:"e", name:"void eye",    hp:18, atk:12, def:0, xp:20, ech:16, min:17, ranged:true, pierce:true },
 ];
 const WARDEN: MonBase = { k:"warden", g:"W", name:"warden of the deep", hp:40, atk:11, def:2, xp:45, ech:55, min:5, boss:true };
 
 /* Color variants: same monster, different skin/eyes and a little stronger. */
 export type Variant = {
   prefix: string; pal: Record<string, string>;
+  fullName?: string;     // replaces the whole name (zone wardens)
   hp: number; atk: number; def?: number; ech: number; erratic?: boolean;
 };
 export const VARIANTS: Record<string, Variant[]> = {
@@ -83,6 +93,14 @@ export const VARIANTS: Record<string, Variant[]> = {
   ],
   wraith: [
     { prefix:"pale", pal:{ w:"#C8D0DC", d:"#7E8899", p:"#E9A13B" }, hp:1.3, atk:1.1, ech:1.4 },
+  ],
+  /* one warden per zone, in zone order */
+  warden: [
+    { prefix:"", fullName:"Cellar Warden", pal:{}, hp:1, atk:1, ech:1 },
+    { prefix:"", fullName:"Stone Warden",  pal:{ p:"#7A7F8C", d:"#4A4F5A", k:"#6FC4C8", m:"#22262E" }, hp:1, atk:1, ech:1 },
+    { prefix:"", fullName:"Drowned Warden", pal:{ p:"#3F7F6E", d:"#24504A", k:"#BFF3F0", m:"#10302A" }, hp:1, atk:1, ech:1 },
+    { prefix:"", fullName:"Forge Warden",  pal:{ p:"#B04A2A", d:"#6E2A18", k:"#F2D06B", m:"#2A0E08" }, hp:1, atk:1, ech:1 },
+    { prefix:"", fullName:"Void Warden",   pal:{ p:"#3A2A5A", d:"#1E1430", k:"#E07A9A", m:"#0A0612" }, hp:1, atk:1, ech:1 },
   ],
   ogre: [
     { prefix:"moss", pal:{ o:"#4F6B3E", d:"#384D2C" }, hp:1.25, atk:1.0, def:1, ech:1.3 },
@@ -141,6 +159,7 @@ export type Mon = {
   kind: string; glyph: string; name: string;
   hp: number; maxHp: number; atk: number; def: number; xp: number; ech: number;
   erratic: boolean; pierce: boolean; slow: boolean; boss: boolean;
+  fast: boolean; explodes: boolean; fireproof: boolean;
   ranged: boolean; phase: boolean; splits: boolean;
   variant: number;   // 0 = normal, n = VARIANTS[kind][n - 1]
   wpn: number;       // index into WEAPONS, -1 for none
@@ -224,9 +243,9 @@ export const relicVal = (g: Game, id: RelicId) => {
   const t = g.relics[id];
   return t ? RELICS[id].values[t - 1] : 0;
 };
-export const sightOf = (g: Pick<Game, "sight" | "relics">) => {
+export const sightOf = (g: Pick<Game, "sight" | "relics" | "depth">) => {
   const t = g.relics.lantern;
-  return g.sight + (t ? RELICS.lantern.values[t - 1] : 0);
+  return Math.max(2, g.sight + (t ? RELICS.lantern.values[t - 1] : 0) + zoneOf(g.depth).sight);
 };
 export const reachOf = (g: Game) => 1 + relicVal(g, "reach");
 
@@ -244,7 +263,7 @@ function hall(grid: Uint8Array, from: number, to: number, fixed: number, horiz: 
   }
 }
 
-function genLevel(r: Rng): { grid: Uint8Array; rooms: Room[] } {
+function genLevel(r: Rng, depth: number): { grid: Uint8Array; rooms: Room[] } {
   const grid = new Uint8Array(MW * MH);
   const rooms: Room[] = [];
   for (let t = 0; t < 120 && rooms.length < 9; t++) {
@@ -261,13 +280,77 @@ function genLevel(r: Rng): { grid: Uint8Array; rooms: Room[] } {
     if (r.chance(0.5)) { hall(grid, a.x, b.x, a.y, true); hall(grid, a.y, b.y, b.x, false); }
     else { hall(grid, a.y, b.y, a.x, false); hall(grid, a.x, b.x, b.y, true); }
   }
-  if (rooms.length < 3) return genLevel(r);
+  if (rooms.length < 3) return genLevel(r, depth);
+  addZoneFeatures(grid, rooms, depth, r);
   // two ways down: the usual stair in the last room, a perilous one in another
   const st = ctr(rooms[rooms.length - 1]);
   grid[idx(st.x, st.y)] = STAIRS;
   const risk = ctr(rooms[rooms.length - 2]);
   grid[idx(risk.x, risk.y)] = STAIRS_RISK;
   return { grid, rooms };
+}
+
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
+
+/* tiles reachable from `from` without walking through walls or lava */
+function reachable(grid: Uint8Array, from: Pt) {
+  const seen = new Uint8Array(MW * MH);
+  const q = [idx(from.x, from.y)];
+  seen[q[0]] = 1;
+  for (let h = 0; h < q.length; h++) {
+    const cx = q[h] % MW, cy = (q[h] / MW) | 0;
+    for (const [dx, dy] of DIRS4) {
+      const nx = cx + dx, ny = cy + dy;
+      if (!inB(nx, ny)) continue;
+      const ni = idx(nx, ny);
+      if (seen[ni] || grid[ni] === WALL || grid[ni] === LAVA) continue;
+      seen[ni] = 1; q.push(ni);
+    }
+  }
+  return seen;
+}
+
+/* the zone's terrain twist: ragged cave walls, pools of water, rivers of lava */
+function addZoneFeatures(grid: Uint8Array, rooms: Room[], depth: number, r: Rng) {
+  const feature = zoneOf(depth).feature;
+  // room centers (start and stairs) and the tiles around them always stay plain floor
+  const keep = new Set<number>();
+  for (const rm of rooms) {
+    const c = ctr(rm);
+    keep.add(idx(c.x, c.y));
+    for (const [dx, dy] of DIRS4) keep.add(idx(c.x + dx, c.y + dy));
+  }
+  if (feature === "caverns") {
+    const carve: number[] = [];
+    for (let y = 2; y < MH - 2; y++) for (let x = 2; x < MW - 2; x++) {
+      const i = idx(x, y);
+      if (grid[i] !== WALL) continue;
+      if (DIRS4.some(([dx, dy]) => grid[idx(x + dx, y + dy)] !== WALL) && r.chance(0.22)) carve.push(i);
+    }
+    for (const i of carve) grid[i] = FLOOR;
+  } else if (feature === "water" || feature === "lava") {
+    const tile = feature === "water" ? WATER : LAVA;
+    rooms.forEach((rm, k) => {
+      if (k === 0) return;
+      if (feature === "lava" && (rm.w < 4 || rm.h < 4)) return; // never wall off a narrow room
+      if (!r.chance(feature === "water" ? 0.6 : 0.5)) return;
+      const cx = r.range(rm.x, rm.x + rm.w - 1), cy = r.range(rm.y, rm.y + rm.h - 1);
+      const rad = feature === "water" ? r.range(1, 2) : 1;
+      for (let y = cy - rad; y <= cy + rad; y++) for (let x = cx - rad; x <= cx + rad; x++) {
+        if (x < rm.x || x >= rm.x + rm.w || y < rm.y || y >= rm.y + rm.h) continue;
+        if (Math.abs(x - cx) + Math.abs(y - cy) > rad) continue;
+        const i = idx(x, y);
+        if (keep.has(i) || grid[i] !== FLOOR) continue;
+        grid[i] = tile;
+      }
+    });
+    if (feature === "lava") {
+      // lava must never cut the way to either staircase; if it does, cool it all down
+      const seen = reachable(grid, ctr(rooms[0]));
+      const ok = [rooms[rooms.length - 1], rooms[rooms.length - 2]].every(rm => { const c = ctr(rm); return seen[idx(c.x, c.y)]; });
+      if (!ok) for (let i = 0; i < grid.length; i++) if (grid[i] === LAVA) grid[i] = FLOOR;
+    }
+  }
 }
 
 function freeSpot(room: Room, grid: Uint8Array, taken: Set<number>, r: Rng): Pt | null {
@@ -309,10 +392,11 @@ function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1, g
   for (let i = 0; i < gen; i++) { xp = Math.ceil(xp / 2); ech = Math.ceil(ech / 2); }
   hp = Math.round(hp);
   return {
-    kind: base.k, glyph: base.g, name: v ? `${v.prefix} ${base.name}` : base.name,
+    kind: base.k, glyph: base.g, name: v ? v.fullName ?? `${v.prefix} ${base.name}` : base.name,
     hp, maxHp: hp, atk: Math.round(atk), def, xp, ech: Math.round(ech),
     erratic: v?.erratic ?? !!base.erratic, pierce: !!base.pierce, slow: !!base.slow, boss: !!base.boss,
     ranged: !!base.ranged, phase: !!base.phase, splits: !!base.splits,
+    fast: !!base.fast, explodes: !!base.explodes, fireproof: !!base.fireproof,
     variant: v ? variant : 0, wpn, arm, gen, alerted: false, disguised: false,
     tick: 0,
   };
@@ -395,17 +479,17 @@ function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number, flo
     if (i === 0) return;
     const n = (depth === 1 ? 1 : r.range(1, depth < 5 ? 2 : 3)) + (risky ? 1 : 0);
     for (let j = 0; j < n; j++) {
-      const pool = MONSTERS.filter(m => !m.noPool && mDepth >= m.min && mDepth <= (m.max ?? 99));
+      const pool = zoneOf(depth).pool.filter(([, from]) => depth >= from).map(([k]) => k);
       const s = freeSpot(rm, grid, taken, r);
       if (!s) continue;
-      mons.push({ ...rollMon(r.pick(pool).k, mDepth, r), x: s.x, y: s.y });
+      mons.push({ ...rollMon(r.pick(pool), mDepth, r), x: s.x, y: s.y });
     }
   });
 
-  if (depth % 5 === 0) {
+  if (isBossFloor(depth)) {
     const rm = rooms[rooms.length - 1];
     const s = freeSpot(rm, grid, taken, r) || ctr(rm);
-    mons.push({ ...makeMon("warden", mDepth)!, x: s.x, y: s.y });
+    mons.push({ ...makeMon("warden", mDepth, zoneIndex(depth) + 1)!, x: s.x, y: s.y });
   }
 
   const nItems = r.range(3, 5) + (risky ? 2 : 0);
@@ -444,7 +528,7 @@ function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number, flo
     if (!s) continue;
     const roll = r.next();
     let t: TrapType = depth >= 2 && roll < 0.2 ? "pit" : depth >= 2 && roll < 0.4 ? "alarm" : "spikes";
-    if (t === "pit" && depth % 5 === 0) t = "spikes"; // no skipping the warden
+    if (t === "pit" && isBossFloor(depth)) t = "spikes"; // no skipping the warden
     traps.push({ t, x: s.x, y: s.y, found: false });
   }
 
@@ -488,7 +572,7 @@ function between(x0: number, y0: number, x1: number, y1: number): Pt[] {
 
 /* Integer-only distance checks: Math.hypot can differ between browsers, which
    would break replays recorded on one device and checked on another. */
-export function computeFov(g: Pick<Game, "sight" | "relics" | "p" | "grid" | "seen">) {
+export function computeFov(g: Pick<Game, "sight" | "relics" | "depth" | "p" | "grid" | "seen">) {
   const R = sightOf(g);
   const lim = (R + 0.3) * (R + 0.3);
   const vis = new Set<number>();
@@ -521,6 +605,7 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
       const ni = idx(nx, ny);
       if (prev[ni] !== -1) continue;
       if (!g.seen[ni] || g.grid[ni] === WALL) continue;
+      if (g.grid[ni] === LAVA && ni !== goal) continue;
       if (knownTrap.has(ni) && ni !== goal) continue;
       prev[ni] = cur; q.push(ni);
     }
@@ -577,7 +662,7 @@ export type RunSetup = {
 export function newRun(s: RunSetup): Game {
   const floorKey = "1s";
   const fr = floorRng(s.seed, floorKey);
-  const lvl = genLevel(fr);
+  const lvl = genLevel(fr, 1);
   const pop = populate(lvl, 1, floorKey, fr);
   const pr = new Rng(hashStr(`${s.seed}:potions`));
   const g: Game = {
@@ -613,7 +698,7 @@ export function descend(g: Game, choice: "s" | "r") {
   g.depth += 1;
   g.floorKey = `${g.depth}${choice}`;
   const fr = floorRng(g.seed, g.floorKey);
-  const lvl = genLevel(fr);
+  const lvl = genLevel(fr, g.depth);
   const pop = populate(lvl, g.depth, g.floorKey, fr);
   g.grid = lvl.grid;
   g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps; g.hazards = [];
@@ -632,6 +717,11 @@ export function descend(g: Game, choice: "s" | "r") {
     say(g, `Depth ${g.depth}. The air gets colder.`);
   }
   if (g.hp > before) say(g, `You catch your breath on the stair. +${g.hp - before}.`);
+  // a new zone gets the last word, so it's the line you read
+  if (zoneIndex(g.depth) !== zoneIndex(g.depth - 1)) {
+    const z = zoneOf(g.depth);
+    say(g, `${z.name}. ${z.intro}`);
+  }
 }
 
 export function say(g: Game, s: string) { g.log.push(s); if (g.log.length > 24) g.log.shift(); }
@@ -705,6 +795,14 @@ function killMon(g: Game, m: Mon) {
     for (let i = 0; i < 2; i++) dropNear(g, m.x, m.y, rollItem(g.rng, g.depth, 1), g.rng);
     say(g, "It coughs up what it swallowed.");
   }
+  if (m.explodes) {
+    say(g, `The ${m.name} bursts in a gout of flame!`);
+    if (cheb(m, g.p) <= 1) {
+      const d = 4 + Math.floor(g.depth / 4);
+      say(g, `The blast scorches you. -${d}.`);
+      hurtPlayer(g, d);
+    }
+  }
   if (m.kind === "mimic") g.chests += 1;
   if (m.boss) {
     g.wardens += 1;
@@ -716,7 +814,7 @@ function killMon(g: Game, m: Mon) {
 function splitSlime(g: Game, m: Mon) {
   if (!m.splits || m.gen >= 2 || m.hp < 4) return;
   const spot = g.rng.shuffle(DIRS8.map(([dx, dy]) => ({ x: m.x + dx, y: m.y + dy }))).find(s =>
-    inB(s.x, s.y) && g.grid[idx(s.x, s.y)] !== WALL && !(s.x === g.p.x && s.y === g.p.y)
+    inB(s.x, s.y) && g.grid[idx(s.x, s.y)] !== WALL && g.grid[idx(s.x, s.y)] !== LAVA && !(s.x === g.p.x && s.y === g.p.y)
     && !g.mons.some(o => o.x === s.x && o.y === s.y));
   if (!spot) return;
   const half = Math.floor(m.hp / 2);
@@ -803,24 +901,26 @@ export function monsterTurn(g: Game, flash: Flash) {
 
     const passable = (tx: number, ty: number) => m.phase
       ? tx > 0 && ty > 0 && tx < MW - 1 && ty < MH - 1
-      : inB(tx, ty) && g.grid[idx(tx, ty)] !== WALL;
+      : inB(tx, ty) && g.grid[idx(tx, ty)] !== WALL && (g.grid[idx(tx, ty)] !== LAVA || m.fireproof);
     const free = (tx: number, ty: number) => passable(tx, ty) && !(tx === g.p.x && ty === g.p.y)
       && !g.mons.some(o => o !== m && o.x === tx && o.y === ty);
 
-    let nx = m.x, ny = m.y;
-    if (aware && !(m.erratic && g.rng.chance(0.35))) {
+    const chase = () => {
       const dx = Math.sign(g.p.x - m.x), dy = Math.sign(g.p.y - m.y);
       const tries = Math.abs(g.p.x - m.x) > Math.abs(g.p.y - m.y)
         ? [[dx, 0], [0, dy], [dx, dy]] : [[0, dy], [dx, 0], [dx, dy]];
       for (const [ax, ay] of tries) {
         if (ax === 0 && ay === 0) continue;
-        if (free(m.x + ax, m.y + ay)) { nx = m.x + ax; ny = m.y + ay; break; }
+        if (free(m.x + ax, m.y + ay)) { m.x += ax; m.y += ay; return; }
       }
+    };
+    if (aware && !(m.erratic && g.rng.chance(0.35))) {
+      chase();
+      if (m.fast && cheb(m, g.p) > 1) chase(); // spiders scuttle twice
     } else if (g.rng.chance(0.4)) {
       const [ax, ay] = g.rng.pick([[0,1],[0,-1],[1,0],[-1,0]]);
-      if (free(m.x + ax, m.y + ay)) { nx = m.x + ax; ny = m.y + ay; }
+      if (free(m.x + ax, m.y + ay)) { m.x += ax; m.y += ay; }
     }
-    m.x = nx; m.y = ny;
   }
 }
 
@@ -913,6 +1013,13 @@ export function enterTile(g: Game, flash?: Flash) {
   }
   pickUp(g);
   triggerTrap(g, flash);
+  if (!g.dead && g.grid[idx(g.p.x, g.p.y)] === LAVA) {
+    const d = 3 + Math.floor(g.depth / 3);
+    g.path = null;
+    say(g, `Lava! It burns! -${d}.`);
+    flash?.(idx(g.p.x, g.p.y), "hurt");
+    hurtPlayer(g, d);
+  }
   const tile = g.grid[idx(g.p.x, g.p.y)];
   if (tile === STAIRS_RISK) say(g, "These stairs reek of danger. Tougher monsters below, but richer loot.");
 }
@@ -1028,7 +1135,7 @@ export function castWaystone(g: Game, flash?: Flash) {
   if (g.inv.waystone <= 0) return;
   g.inv.waystone -= 1;
   const spots: number[] = [];
-  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && g.grid[i] !== WALL) spots.push(i);
+  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && g.grid[i] !== WALL && g.grid[i] !== LAVA) spots.push(i);
   const far = spots.filter(i => {
     const dx = i % MW - g.p.x, dy = ((i / MW) | 0) - g.p.y;
     return dx * dx + dy * dy > 49 && !g.mons.some(m => idx(m.x, m.y) === i);

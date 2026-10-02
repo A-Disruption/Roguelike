@@ -1,9 +1,10 @@
 import {
-  C, VW, VH, WALL, STAIRS, STAIRS_RISK, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
+  C, VW, VH, WALL, STAIRS, STAIRS_RISK, WATER, LAVA, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
   type Game, type Mon, type Item,
 } from "./core.ts";
 import { TIER_COLORS, type RelicId } from "./relics.ts";
 import { classOf } from "./classes.ts";
+import { zoneOf } from "./zones.ts";
 
 /* ============================ sprites ============================ */
 /* 8x8 pixel art. '.' is transparent; other chars index the sprite's palette. */
@@ -323,6 +324,23 @@ export const SPRITES: Record<string, SpriteDef> = {
       "........",
     ],
   },
+  /* ---- zone monsters ---- */
+  spider: {
+    pal: { b:"#2A2430", d:"#5A4A62", k:"#C04A3B" },
+    rows: ["........","d.d..d.d",".d.bb.d.","..bbbb..","dbkbbkbd","..bbbb..",".d.bb.d.","d......d"],
+  },
+  drowned: {
+    pal: { g:"#5E8A7A", d:"#3A5A50", k:"#BFF3F0", c:"#2A3A44", w:"#3F7F96" },
+    rows: ["..dddd..",".dggggd.",".gkggkg.",".gggggg.","..cccc..","gccccccg",".cc..cc.","wwwwwwww"],
+  },
+  imp: {
+    pal: { r:"#C04A3B", o:"#E9A13B", y:"#F2D06B", k:"#12161E" },
+    rows: ["r......r","rr.oo.rr",".roooor.",".okooko.",".oyyyyo.","..rrrr..",".r.rr.r.","........"],
+  },
+  eye: {
+    pal: { p:"#6A3A8A", w:"#E6DCC9", k:"#12161E", r:"#C04A3B", d:"#3A1E4A" },
+    rows: ["..dddd..",".dppppd.","dpwwrwpd","dpwkkwpd","dpwkkwpd","dprwwwpd",".dppppd.","..dddd.."],
+  },
   /* ---- heroes (same palette letters as the wanderer so armor and weapons layer the same way) ---- */
   ranger: {
     pal: { c:"#2F4A2C", d:"#4E7A46", f:"#D9B48A", k:"#12161E", w:"#A87440", s:"#D8D2BE" },
@@ -551,6 +569,7 @@ export function drawMap(
   flashes: Record<number, string>, ghosts: GhostMark[] = [],
 ) {
   const seeMimics = (g.relics.lantern ?? 0) >= 3;
+  const zc = zoneOf(g.depth).colors;
   ctx.imageSmoothingEnabled = false;
   const blit = (cv: HTMLCanvasElement | null, px: number, py: number, alpha = 1) => {
     if (!cv) return;
@@ -570,19 +589,38 @@ export function drawMap(
 
       const vis = g.vis.has(i);
       const wall = g.grid[i] === WALL;
-      ctx.fillStyle = wall ? (vis ? C.litWall : C.memWall) : (vis ? C.litFloor : C.memFloor);
+      ctx.fillStyle = wall ? (vis ? zc.litWall : zc.memWall) : (vis ? zc.litFloor : zc.memFloor);
       ctx.fillRect(px, py, ts, ts);
 
       const h = hash32(i);
       if (wall) {
-        ctx.fillStyle = vis ? "#63482F" : "#1D2430";
+        ctx.fillStyle = vis ? zc.wallTop : zc.memTop;
         ctx.fillRect(px, py, ts, Math.max(1, Math.round(ts * 0.11)));
         if (h % 3 === 0) {
-          ctx.fillStyle = vis ? "#3B2A1B" : "#121821";
+          ctx.fillStyle = vis ? zc.crack : zc.memCrack;
           ctx.fillRect(px + ts * 0.28, py + ts * 0.42, ts * 0.3, ts * 0.11);
         }
+      } else if (g.grid[i] === WATER) {
+        ctx.fillStyle = vis ? "#1E4A5A" : "#102229";
+        ctx.fillRect(px, py, ts, ts);
+        if (vis) {
+          ctx.fillStyle = "#3F8AA0";
+          const t = (h + (g.turns >> 1)) % 4;
+          ctx.fillRect(px + ts * (0.15 + t * 0.15), py + ts * 0.35, ts * 0.25, ts * 0.07);
+          ctx.fillRect(px + ts * (0.55 - t * 0.1), py + ts * 0.7, ts * 0.2, ts * 0.07);
+        }
+      } else if (g.grid[i] === LAVA) {
+        ctx.fillStyle = vis ? "#C8461E" : "#4A1A10";
+        ctx.fillRect(px, py, ts, ts);
+        if (vis) {
+          ctx.fillStyle = "#F2C46B";
+          const t = (h + g.turns * 3) % 5;
+          ctx.fillRect(px + ts * (0.15 + t * 0.12), py + ts * 0.25, ts * 0.16, ts * 0.12);
+          ctx.fillStyle = "#8C2A12";
+          ctx.fillRect(px + ts * (0.6 - t * 0.08), py + ts * 0.65, ts * 0.22, ts * 0.12);
+        }
       } else if (h % 6 === 0) {
-        ctx.fillStyle = vis ? "#33261A" : "#141922";
+        ctx.fillStyle = vis ? zc.speck : zc.memSpeck;
         ctx.fillRect(px + ts * 0.3, py + ts * 0.55, ts * 0.22, ts * 0.1);
       }
 

@@ -5,7 +5,9 @@ import {
   relicLabel, relicBlurb, scoreOf,
   type Game, type Meta, type Upgrade, type Flash, type RunMode,
 } from "./game/core";
-import { drawMap, playerSprite, potionSprite, relicSprite, type GhostMark } from "./game/sprites";
+import { drawMap, playerSprite, potionSprite, relicSprite, monSprite, type GhostMark } from "./game/sprites";
+import { ZONES, ZONE_LEN, zoneOf, zoneIndex, zoneStart } from "./game/zones";
+import type { Mon } from "./game/core";
 import {
   loadMeta, saveMeta, loadRun, saveRun, clearRun, loadActive, requestPersist, isStandalone, isIOS,
   exportCode, importCode, loadProfile, saveProfile, loadRecords, addRecord, loadFriends, addFriendRun, removeFriendRun,
@@ -117,6 +119,39 @@ function HeroPicker({ meta, onPick }: { meta: Meta; onPick: (id: ClassId) => voi
   );
 }
 
+/* ============================ zone guide ============================ */
+
+const wardenIcon = (zone: number) =>
+  monSprite({ kind: "warden", variant: zone + 1, wpn: -1, arm: -1, disguised: false } as Mon);
+
+function ZoneGuide({ best }: { best: number }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+      {ZONES.map((z, i) => {
+        const found = i === 0 || best >= zoneStart(i);
+        const from = zoneStart(i), to = i === ZONES.length - 1 ? "…" : String(from + ZONE_LEN - 1);
+        const kinds = [...new Set(z.pool.map(([k]) => k))];
+        return (
+          <div key={z.name} style={{ borderLeft: `3px solid ${found ? z.colors.wallTop : C.memWall}`, padding: "2px 0 2px 10px" }}>
+            <div style={{ fontSize: 14.5, fontWeight: 600, color: found ? C.bone : C.memGlyph }}>
+              {found ? z.name : "???"} <span style={{ fontWeight: 400, fontSize: 12, color: C.dim }}>· floors {from}–{to}</span>
+            </div>
+            {found ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
+                {kinds.map(k => <SpriteIcon key={k} name={k} size={20} />)}
+                <span style={{ color: C.memGlyph, margin: "0 2px" }}>·</span>
+                <SpriteIcon src={wardenIcon(i)} size={22} />
+              </div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: C.memGlyph, marginTop: 3 }}>Reach floor {from} to discover what lives here.</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ============================ backup panel ============================ */
 
 function Backup({ onRestored }: { onRestored: () => void }) {
@@ -194,6 +229,9 @@ export default function LampblackDepths() {
   const [tray, setTray] = useState(false);
   const [relicsOpen, setRelicsOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [zoneCard, setZoneCard] = useState<{ name: string; intro: string; depth: number } | null>(null);
+  const lastZone = useRef("");
+  const zoneTimer = useRef<number | undefined>(undefined);
   const mapBox = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const walkTimer = useRef<number | undefined>(undefined);
@@ -485,7 +523,19 @@ export default function LampblackDepths() {
     clearRun("free");
   };
 
-  useEffect(() => () => { clearTimeout(walkTimer.current); }, []);
+  useEffect(() => {
+    const g = G.current;
+    if (screen !== "game" || !g) return;
+    const key = `${runId(g)}:${zoneIndex(g.depth)}`;
+    if (lastZone.current === key) return;
+    lastZone.current = key;
+    const z = zoneOf(g.depth);
+    setZoneCard({ name: z.name, intro: z.intro, depth: g.depth });
+    clearTimeout(zoneTimer.current);
+    zoneTimer.current = window.setTimeout(() => setZoneCard(null), 2600);
+  });
+
+  useEffect(() => () => { clearTimeout(walkTimer.current); clearTimeout(zoneTimer.current); }, []);
 
   /* ---------------- screens ---------------- */
 
@@ -579,16 +629,8 @@ export default function LampblackDepths() {
             })}
           </div>
 
-          <h2 style={{ ...sectionTitle, margin: "22px 0 8px" }}>What you will meet</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginBottom: 20 }}>
-            {[["rat","cellar rat"],["bat","blind bat"],["goblin","goblin"],["skeleton","skeleton"],
-              ["slime","slime"],["archer","goblin archer"],["ghost","ghost"],
-              ["wraith","wraith"],["ogre","ogre"],["warden","warden"]].map(([k, n]) => (
-              <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.dim }}>
-                <SpriteIcon name={k} size={20} /> {n}
-              </div>
-            ))}
-          </div>
+          <h2 style={{ ...sectionTitle, margin: "22px 0 8px" }}>The depths</h2>
+          <ZoneGuide best={meta.best} />
 
           <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Relics you might find</h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 14px", marginBottom: 20 }}>
@@ -720,9 +762,18 @@ export default function LampblackDepths() {
         </div>
       )}
 
-      <div ref={mapBox} style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}>
+      <div ref={mapBox} style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 4, position: "relative" }}>
         <canvas ref={canvasRef} className="lb-map" onClick={onCanvasTap}
           style={{ width: VW * ts, height: VH * ts, display: "block" }} />
+        {zoneCard && (
+          <div key={zoneCard.name + zoneCard.depth} className="lb-zone" aria-live="polite"
+            style={{ position: "absolute", left: 16, right: 16, top: "30%", textAlign: "center", pointerEvents: "none",
+                     background: "rgba(8,10,14,0.82)", border: `1px solid ${zoneOf(zoneCard.depth).colors.wallTop}`, borderRadius: 4, padding: "14px 12px" }}>
+            <div className="lb-mono" style={{ fontSize: 11, color: C.dim, letterSpacing: "0.12em" }}>FLOOR {zoneCard.depth}</div>
+            <div style={{ fontSize: 26, fontWeight: 600, margin: "2px 0 4px" }}>{zoneCard.name}</div>
+            <div style={{ fontSize: 13.5, color: C.dim, lineHeight: 1.4 }}>{zoneCard.intro}</div>
+          </div>
+        )}
       </div>
 
       <div style={{ padding: "0 14px", height: 40, display: "flex", flexDirection: "column", justifyContent: "center", overflow: "hidden" }}>

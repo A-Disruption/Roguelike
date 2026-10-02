@@ -11,6 +11,8 @@ export const css = `
 .lb-btn:active { transform: translateY(1px); }
 .lb-btn:focus-visible { outline:2px solid ${C.ember}; outline-offset:2px; }
 canvas.lb-map { touch-action: manipulation; -webkit-tap-highlight-color:transparent; image-rendering: pixelated; }
+@keyframes lbZone { 0% { opacity: 0; transform: translateY(8px); } 12% { opacity: 1; transform: none; } 78% { opacity: 1; } 100% { opacity: 0; } }
+.lb-zone { animation: lbZone 2.6s ease-out forwards; }
 `;
 
 export function Shell({ children }: { children: ReactNode }) {
