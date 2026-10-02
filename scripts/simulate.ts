@@ -5,7 +5,7 @@
 import {
   newRun, freshMeta, startStats, dailySeed, dailyClass, POTION_EFFECTS, WEAPONS, applyAction, stepAction, serializeRun, deserializeRun,
   descend, revealMimic, playerAttack, endTurn, idx, inB, WALL, WATER, LAVA, FLOOR, STAIRS, STAIRS_RISK, isStairs, DIRS8, canReach,
-  computeFov, sightOf, cheb, canFirebolt, totalAtk, scoreOf, trainCost,
+  computeFov, sightOf, cheb, canFirebolt, totalAtk, scoreOf, trainCost, reachOf,
   type Game, type RunSetup,
 } from "../src/game/core.ts";
 import {
@@ -416,7 +416,7 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
   const shadow = POTION_EFFECTS.findIndex(e => e.k === "shadow");
   if (!rogue.known[shadow] || rogue.relics.feather !== 3 || rogue.inv.waystone !== 1) throw new Error("rogue kit wrong");
   if (wand.known.some(Boolean)) throw new Error("wanderer should know no potions");
-  if (ranger.relics.reach !== 2 || ranger.sight !== 7) throw new Error("ranger kit wrong");
+  if (reachOf(ranger) !== 3 || ranger.sight !== 7 || Object.keys(ranger.relics).length) throw new Error("ranger kit wrong");
   // same seed, same map, whatever the hero
   if (serializeRun(knight).G !== serializeRun(mage).G) throw new Error("class changed the map");
 }
@@ -482,6 +482,44 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
     let total = 0; for (let i = 0; i < 40; i++) { m.hp = 500; m.x = 12; m.y = 10; g.p = { x: 10, y: 10 }; g.vis = computeFov(g); applyAction(g, "a2.0", noFlash); total += 500 - m.hp; }
     const avg = total / 40;
     if (avg > totalAtk(g) * 0.9) throw new Error(`reach hits too hard: ${avg} of ${totalAtk(g)}`); }
+  // the gauntlet: everyone else gets a 2-tile jab at 60/80/100%; a Ranger's bow gets 1 tile longer
+  { const { g } = arena("mage"); if (reachOf(g) !== 1) throw new Error("mage should start in melee");
+    g.relics.reach = 1; if (reachOf(g) !== 2) throw new Error("gauntlet should give a 2-tile jab");
+    g.relics.reach = 3; if (reachOf(g) !== 2) throw new Error("gauntlet tiers shouldn't add range");
+    const r = arena("ranger").g; r.relics.reach = 1; if (reachOf(r) !== 4) throw new Error("ranger + gauntlet should reach 4"); }
+  { const avg = (tier: number) => { const { g, mon } = arena("wanderer"); g.relics.reach = tier; const m = mon(12, 10); g.mons = [m];
+      let t = 0; for (let i = 0; i < 60; i++) { m.hp = 500; m.alerted = true; g.p = { x: 10, y: 10 }; g.vis = computeFov(g); applyAction(g, "a2.0", noFlash); t += 500 - m.hp; }
+      if (!g.fx.length && false) throw new Error(""); return t / 60; };
+    const a1 = avg(1), a3 = avg(3);
+    if (!(a3 > a1 * 1.4)) throw new Error(`gauntlet tiers should hit harder: I ${a1}, III ${a3}`); }
+  // projectiles remember who they were aimed at, so the screen can follow them
+  { const { g, mon } = arena("ranger"); const m = mon(13, 10); g.mons = [m]; g.vis = computeFov(g);
+    applyAction(g, "a3.0", noFlash);
+    if (!g.fx.some(f => f.k === "arrow" && f.who === m)) throw new Error("arrow lost its target"); }
+  // Knight: blocks about a quarter of melee hits
+  { const { g, mon } = arena("knight"); g.maxHp = g.hp = 99999; const m = mon(11, 10); m.atk = 10; g.mons = [m];
+    let blocked = 0; for (let i = 0; i < 400; i++) { const hp = g.hp; endTurn(g, noFlash); if (g.hp === hp) blocked++; }
+    if (blocked < 70 || blocked > 130) throw new Error(`knight blocked ${blocked}/400`);
+    const w = arena("wanderer").g; w.maxHp = w.hp = 99999; const m2 = mon(11, 10); m2.atk = 10; w.mons = [m2];
+    let wb = 0; for (let i = 0; i < 200; i++) { const hp = w.hp; endTurn(w, noFlash); if (w.hp === hp) wb++; }
+    if (wb > 0) throw new Error("only the knight should block"); }
+  // Rogue: double damage on a monster that hasn't noticed you (not bosses)
+  { const dmg = (cls: (typeof CLASS_IDS)[number], alerted: boolean) => { let t = 0;
+      for (let i = 0; i < 80; i++) { const { g, mon } = arena(cls); g.relics = {}; const m = mon(11, 10); m.alerted = alerted; m.def = 0; g.mons = [m]; g.atk = 10; applyAction(g, stepAction(1, 0), noFlash); t += 500 - m.hp; }
+      return t / 80; };
+    const sneak = dmg("rogue", false), open = dmg("rogue", true);
+    if (!(sneak > open * 1.8)) throw new Error(`backstab ${sneak} vs ${open}`);
+    const w1 = dmg("wanderer", false), w2 = dmg("wanderer", true);
+    if (Math.abs(w1 - w2) > w2 * 0.2) throw new Error("only rogues backstab"); }
+  // Wanderer: scavenges extra loot from some kills
+  { let extra = 0;
+    const { g, mon } = arena("wanderer"); g.atk = 99;   // one game, so the dice keep rolling between kills
+    for (let i = 0; i < 300; i++) {
+      const m = mon(11, 10); m.hp = 1; m.wpn = -1; m.arm = -1; g.mons = [m]; g.items = []; g.p = { x: 10, y: 10 };
+      applyAction(g, stepAction(1, 0), noFlash); if (g.items.length) extra++;
+    }
+    if (extra < 45 || extra > 110) throw new Error(`wanderer scavenged ${extra}/300`); }
+
   // the merchant: buy if you can afford it, only next to them, sold items stay sold
   { const { g } = arena("wanderer");
     g.vendor = { x: 11, y: 10, stock: [

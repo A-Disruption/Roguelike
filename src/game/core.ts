@@ -16,7 +16,7 @@ export type { Pt, Room } from "./tiles.ts";
 
 /* Bump whenever a change would make old seeds/replays play out differently.
    Runs only compare (and ghosts only replay) between matching rules versions. */
-export const RULES_VERSION = 5;
+export const RULES_VERSION = 6;
 
 
 export const C = {
@@ -225,7 +225,7 @@ export type Vendor = { x: number; y: number; stock: VendorItem[] };
 
 /* visual effects for the screen to animate (arrows, bolts, frost…). Not saved, not part of replays. */
 export type FxKind = "arrow" | "thrust" | "bolt" | "gaze" | "web" | "fire" | "zap" | "frost" | "burst" | "blink" | "slam" | "beam";
-export type Fx = { k: FxKind; from: Pt; to: Pt; path?: Pt[] };
+export type Fx = { k: FxKind; from: Pt; to: Pt; path?: Pt[]; who?: Mon };  // who: the target, so the effect can follow it
 
 export type TrapType = keyof typeof TRAP_NAMES;
 export type Trap = { t: TrapType; x: number; y: number; found: boolean };
@@ -306,7 +306,12 @@ export const sightOf = (g: Pick<Game, "sight" | "relics" | "depth">) => {
   const t = g.relics.lantern;
   return Math.max(2, g.sight + (t ? RELICS.lantern.values[t - 1] : 0) + zoneOf(g.depth).sight);
 };
-export const reachOf = (g: Game) => 1 + relicVal(g, "reach");
+/* how far you can hit: a Ranger's bow (+1 with the gauntlet), otherwise the gauntlet's 2-tile jab */
+export const reachOf = (g: Game) => {
+  const bow = classOf(g.start.cls).bow;
+  const gauntlet = !!g.relics.reach;
+  return bow ? bow + (gauntlet ? 1 : 0) : gauntlet ? 2 : 1;
+};
 
 export function scoreOf(g: Game) {
   return g.depth * 100 + g.kills * 10 + g.echoes + g.spent + g.perils * 50;
@@ -819,6 +824,10 @@ function killMon(g: Game, m: Mon) {
     say(g, "Your Kindling Pouch smolders. +1 ember scroll.");
   }
 
+  const scavenge = classOf(g.start.cls).scavenge;
+  if (scavenge && !m.gen && g.rng.chance(scavenge / 100)) {
+    if (dropNear(g, m.x, m.y, rollItem(g.rng, g.depth), g.rng)) say(g, "You scavenge something useful from it.");
+  }
   if (m.wpn >= 0 && g.rng.chance(0.4)) {
     const w = WEAPONS[m.wpn];
     if (dropNear(g, m.x, m.y, { t: "weapon", name: w.name, atk: w.atk }, g.rng)) say(g, `Its ${w.name} clatters to the floor.`);
@@ -871,11 +880,15 @@ function strike(g: Game, m: Mon, flash: Flash, verb: string, mul = 1) {
 }
 
 export function playerAttack(g: Game, m: Mon, flash: Flash, ranged = false) {
+  const cls = classOf(g.start.cls);
+  const unaware = !m.alerted;
   m.alerted = true;
-  const archer = ranged && g.start.cls === "ranger";
-  const verb = !ranged ? "You hit" : archer ? "Your arrow hits" : "You strike";
-  const mul = ranged ? 0.8 : 1;   // hitting from a distance is safer, so it hits a little softer
-  if (ranged) g.fx.push({ k: archer ? "arrow" : "thrust", from: { ...g.p }, to: { x: m.x, y: m.y } });
+  const archer = ranged && cls.bow > 0;
+  let verb = !ranged ? "You hit" : archer ? "Your arrow hits" : "Your long jab hits";
+  // arrows hit at 80%; the gauntlet's jab at 60/80/100% by tier
+  let mul = !ranged ? 1 : archer ? 0.8 : relicVal(g, "reach") / 100;
+  if (cls.backstab && unaware && !m.boss) { mul *= 2; verb = "You backstab"; }
+  if (ranged) g.fx.push({ k: archer ? "arrow" : "thrust", from: { ...g.p }, to: { x: m.x, y: m.y }, who: m });
   if (!strike(g, m, flash, verb, mul)) return;
   const twin = relicVal(g, "twin");
   if (twin && g.rng.chance(twin / 100)) {
@@ -1068,6 +1081,8 @@ export function monsterTurn(g: Game, flash: Flash) {
     }
 
     if (dist === 1 && (g.hidden <= 0 || m.alerted)) {
+      const block = classOf(g.start.cls).block;
+      if (block && g.rng.chance(block / 100)) { say(g, `You catch the ${m.name}'s blow on your shield!`); continue; }
       const d = dmgRoll(g.rng, m.atk, m.pierce ? 0 : totalDef(g));
       say(g, `The ${m.name} hits you for ${d}.`);
       flash(idx(g.p.x, g.p.y), "hurt");
@@ -1396,7 +1411,7 @@ function castSpell(g: Game, id: SpellId, target: Pt | null, flash: Flash): boole
     const m = target && g.mons.find(o => o.x === g.p.x + target.x && o.y === g.p.y + target.y);
     if (!m || !canFirebolt(g, m)) return false;
     g.mana -= spell.cost;
-    g.fx.push({ k: "fire", from: { ...g.p }, to: { x: m.x, y: m.y } });
+    g.fx.push({ k: "fire", from: { ...g.p }, to: { x: m.x, y: m.y }, who: m });
     if (m.disguised) revealMimic(g, m);
     m.alerted = true;
     const d = dmgRoll(g.rng, totalAtk(g) + 4 + Math.floor(g.depth / 2), Math.floor(m.def / 2));

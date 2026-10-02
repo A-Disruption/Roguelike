@@ -511,7 +511,9 @@ export default function LampblackDepths() {
     const camX = Math.max(0, Math.min(MW - VW, g.p.x - (VW >> 1)));
     const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
     const t = performance.now();
-    g.fx.forEach((fx, i) => fxQueue.current.push({ fx, start: t + i * 70, dur: FX_MS[fx.k] ?? 250, camX, camY }));
+    // monsters move after you shoot: aim the arrow at where the target ended up (if it survived)
+    const aimed = g.fx.map(fx => (fx.who && g.mons.includes(fx.who) ? { ...fx, to: { x: fx.who.x, y: fx.who.y } } : fx));
+    aimed.forEach((fx, i) => fxQueue.current.push({ fx, start: t + i * 70, dur: FX_MS[fx.k] ?? 250, camX, camY }));
     if (!fxRaf.current) fxRaf.current = requestAnimationFrame(fxTick);
   }, [fxTick]);
 

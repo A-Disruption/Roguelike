@@ -13,7 +13,7 @@ type RelicDef = {
 
 export const RELICS: Record<RelicId, RelicDef> = {
   fang:     { name: "Bloodthirst Fang", values: [1, 5, 15],    blurb: v => `heal ${v} every time you kill` },
-  reach:    { name: "Reaching Gauntlet", values: [1, 2, 3],    blurb: v => `attack monsters up to ${v + 1} tiles away` },
+  reach:    { name: "Reaching Gauntlet", values: [60, 80, 100], blurb: v => `jab monsters 2 tiles away for ${v}% damage (a Ranger's bow reaches 1 further)` },
   magma:    { name: "Magma Heart",      values: [3, 6, 10],    blurb: (v, t) => `lava bursts under anything that hits you (${v} dmg for ${t + 1} turns)` },
   thorns:   { name: "Thorn Bracer",     values: [1, 3, 6],     blurb: v => `monsters that hit you take ${v} back` },
   coin:     { name: "Lucky Coin",       values: [10, 25, 50],  blurb: v => `+${v}% echoes from kills` },

@@ -41,7 +41,7 @@ export function SpriteIcon({ name, src: given, size = 16 }: { name?: string; src
     cx.imageSmoothingEnabled = false;
     cx.clearRect(0, 0, cv.width, cv.height);
     const src = given ?? (name ? spriteCanvas(name) : null);
-    if (src) cx.drawImage(src, 0, 0, 8, 8, 0, 0, size * dpr, size * dpr);
+    if (src) cx.drawImage(src, 0, 0, src.width, src.height, 0, 0, size * dpr, size * dpr);
   }, [name, given, size]);
   return <canvas ref={ref} className="lb-map" style={{ width: size, height: size, display: "block", flexShrink: 0 }} />;
 }

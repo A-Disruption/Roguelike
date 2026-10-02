@@ -13,16 +13,24 @@ type SpriteDef = { pal: Record<string, string>; rows: string[] };
 
 export const SPRITES: Record<string, SpriteDef> = {
   player: {
-    pal: { c:"#38445A", d:"#4C5A73", f:"#D9B48A", k:"#12161E", e:"#E9A13B" },
+    pal: { c:"#2E3648", d:"#4C5A73", f:"#D9B48A", k:"#12161E", b:"#6B4A2E", l:"#8A6A3A", e:"#F2C46B", w:"#8C8478", v:"#5C3B28" },
     rows: [
-      "..cccc..",
-      ".cddddc.",
-      ".cffffc.",
-      ".cfkkfc.",
-      "..dddd..",
-      ".cddddc.",
-      ".cc..cce",
-      ".c....ce",
+      "......cccc......",
+      ".....cddddc.....",
+      "....cddddddc....",
+      "....cdffffdc....",
+      "....cfkffkfc....",
+      "....cffffffc....",
+      ".....cffffc.....",
+      "..w.cddddddc....",
+      "..wcddddddddc.l.",
+      "..wcdddbbdddcle.",
+      "..vcddddddddcle.",
+      "..v.cddddddc.l..",
+      ".....dd..dd.....",
+      ".....dd..dd.....",
+      ".....bb..bb.....",
+      "....bbb..bbb....",
     ],
   },
   rat: {
@@ -377,20 +385,88 @@ export const SPRITES: Record<string, SpriteDef> = {
   },
   /* ---- heroes (same palette letters as the wanderer so armor and weapons layer the same way) ---- */
   ranger: {
-    pal: { c:"#2F4A2C", d:"#4E7A46", f:"#D9B48A", k:"#12161E", w:"#A87440", s:"#D8D2BE" },
-    rows: ["..cccc.w",".cddddsw",".cffffsw",".cfkkfsw","..ddddsw",".cddddsw",".cc..ccw",".c....c."],
+    pal: { h:"#2F4A2C", c:"#22361F", d:"#4E7A46", f:"#D9B48A", k:"#12161E", b:"#5C3B28", w:"#A87440", s:"#E6DCC9", q:"#7A5138", a:"#C04A3B" },
+    rows: [
+      "......hhhh......",
+      ".....hhhhhh.....",
+      "....hhhhhhhh.w..",
+      "....hhffffhh..w.",
+      "....hfkffkfh..ws",
+      "....hffffffh..ws",
+      "..a..hffffh...ws",
+      "..qchddddddhc.ws",
+      "..qcddddddddc.ws",
+      "..qcdddbbdddc.ws",
+      "...cddddddddc.ws",
+      "....cddddddc..w.",
+      ".....dd..dd..w..",
+      ".....dd..dd.....",
+      ".....bb..bb.....",
+      "....bbb..bbb....",
+    ],
   },
   mage: {
-    pal: { c:"#3A2450", d:"#6A4A9A", f:"#D9B48A", k:"#12161E", h:"#4E3A6E", e:"#E9A13B", y:"#B08A2E" },
-    rows: ["...hh...","..hhhh..",".hhhhhh.",".cffffce",".cfkkfcy",".cddddcy",".ddddddy",".dd..ddy"],
+    pal: { h:"#4E3A6E", y:"#D4C36A", c:"#2A1C40", d:"#6A4A9A", l:"#8A6AC0", f:"#D9B48A", k:"#12161E", g:"#E6DCC9", s:"#7A5138", w:"#E9A13B", v:"#F2D06B", b:"#3A2A20" },
+    rows: [
+      "......h......v..",
+      "......hh....vwv.",
+      ".....hhh.....v..",
+      "....hhhhh....s..",
+      "...yyyyyyy...s..",
+      "....cffffc...s..",
+      "....fkffkf...s..",
+      "....fgggff...s..",
+      "....cgggdc...s..",
+      "...cdggdddc..s..",
+      "..cddlddddddcs..",
+      ".cddlddddddddsc.",
+      ".cdddddddddddsc.",
+      ".cccccccccccccc.",
+      "....bb....bb....",
+      "................",
+    ],
   },
   knight: {
-    pal: { c:"#5A6370", d:"#8A94A3", f:"#6A737D", k:"#E6DCC9", e:"#C04A3B", g:"#D4C36A" },
-    rows: ["..cccc..",".cddddc.",".cffffc.",".cfkkfc.","..dddd..",".cddddee",".cc..ceg",".c....ee"],
+    pal: { p:"#C04A3B", c:"#3A414C", d:"#8A94A3", l:"#C9CFD6", k:"#12161E", w:"#C9CFD6", v:"#8C7A3A", r:"#8C2E26", y:"#D4C36A", b:"#4A3524" },
+    rows: [
+      ".......pp.......",
+      "......pp........",
+      ".....cccccc.....",
+      "....cdllddc.....",
+      "....cdkkkkdc....",
+      "....cddddddc....",
+      ".....cddddc.....",
+      "..w.cddlddd.rrr.",
+      "..wcdddddddcrryr",
+      "..wcdddbbdddrryr",
+      "..vcddddddddrrrr",
+      "..v.cddddddc.rr.",
+      ".....dd..dd.....",
+      ".....ll..ll.....",
+      ".....dd..dd.....",
+      "....bbb..bbb....",
+    ],
   },
   rogue: {
-    pal: { c:"#1E2026", d:"#2E323C", f:"#D9B48A", k:"#12161E", r:"#C04A3B", e:"#C9CFD6" },
-    rows: ["..cccc..",".cccccc.",".cffffc.",".cfkkfc.","..rrrr..",".cddddc.",".cc..cce",".c....ce"],
+    pal: { h:"#1E2026", c:"#14161C", d:"#2E323C", r:"#C04A3B", k:"#E9A13B", w:"#C9CFD6", v:"#5C3B28", b:"#3A2A20" },
+    rows: [
+      "......hhhh......",
+      ".....hhhhhh.....",
+      "....hhhhhhhh....",
+      "....hhkhhkhh....",
+      "....hrrrrrrh....",
+      "....hrrrrrrh....",
+      ".....crrrrc.....",
+      ".w..cddddddc..w.",
+      ".wvcddddddddcvw.",
+      "...cdddbbdddc...",
+      "...cddddddddc...",
+      "....cddddddc....",
+      ".....dd..dd.....",
+      ".....dd..dd.....",
+      ".....bb..bb.....",
+      "....bbb..bbb....",
+    ],
   },
   /* ---- relics (tier shown by colored corners) ---- */
   fang: {
@@ -464,12 +540,13 @@ function compose(key: string, base: string, pal: Record<string, string> = {}, px
   if (hit) return hit;
   const def = SPRITES[base];
   if (!def) return null;
+  const size = def.rows.length;
   const cv = document.createElement("canvas");
-  cv.width = 8; cv.height = 8;
+  cv.width = size; cv.height = size;
   const cx = cv.getContext("2d")!;
-  for (let y = 0; y < 8; y++) {
-    const row = def.rows[y] || "........";
-    for (let x = 0; x < 8; x++) {
+  for (let y = 0; y < size; y++) {
+    const row = def.rows[y] || "";
+    for (let x = 0; x < size; x++) {
       const ch = row[x];
       if (!ch || ch === ".") continue;
       const c = pal[ch] ?? def.pal[ch];
@@ -539,26 +616,38 @@ const TORSO: Record<string, [number, number][]> = {
   ogre:     [[1,5],[2,5],[3,5],[4,5],[5,5],[6,5]],
 };
 
+/* each hero holds their own kind of weapon (staff, bow, sword and shield, daggers);
+   a weapon you find recolors it by tier (w = main, v = accent) */
+const WEAPON_TINT = [
+  { w: "#9C8068", v: "#5C3B28" },  // rusted knife
+  { w: "#C9CFD6", v: "#8C8478" },  // iron sword
+  { w: "#AEB5BE", v: "#8B5A2B" },  // hooked spear
+  { w: "#6FC4C8", v: "#D4C36A" },  // runed blade
+  { w: "#F2D06B", v: "#C04A3B" },  // kingsbane
+  { w: "#CFC8F0", v: "#9A5AA8" },  // the long quiet
+];
+
 export function playerSprite(g: Pick<Game, "weapon" | "armor"> & { start?: { cls?: string } }) {
   const base = classOf(g.start?.cls).sprite;
   const wt = g.weapon ? weaponTier(g.weapon.name) : -1;
   const at = g.armor ? armorTier(g.armor.name) : -1;
-  let pal: Record<string, string> = {};
+  const pal: Record<string, string> = {};
   if (at >= 0) {
     const a = ARMOR_COLORS[at];
-    pal = { d: a.main, c: a.dark };
+    pal.d = a.main; pal.c = a.dark;
     // the heavy armors come with a full helm and glowing eye slits
     if (at >= 3) { pal.f = a.main; pal.k = a.light; }
   }
-  return compose(`${base}|${wt}|${at}`, base, pal, wt >= 0 ? WEAPON_PX[wt] : []);
+  if (wt >= 0) Object.assign(pal, WEAPON_TINT[wt]);
+  return compose(`${base}|${wt}|${at}`, base, pal);
 }
 
-/* friends' ghosts: the hero in spectral teal, still showing their gear */
-export function ghostSprite(cls: string, wt: number, at: number) {
+/* friends' ghosts: the same hero, all in spectral teal */
+export function ghostSprite(cls: string, _wt: number, _at: number) {
   const base = classOf(cls).sprite;
-  return compose(`ghost|${base}|${wt}|${at}`, base,
-    { c:"#3F7F86", d:"#6FC4C8", f:"#CFF3F2", k:"#12161E", e:"#BFF3F0", h:"#3F7F86", r:"#6FC4C8", w:"#BFF3F0", s:"#BFF3F0", y:"#BFF3F0", g:"#BFF3F0" },
-    wt >= 0 ? WEAPON_PX[wt].map(([x, y]) => [x, y, "#BFF3F0"] as Px) : []);
+  const def = SPRITES[base];
+  const pal = Object.fromEntries(Object.keys(def?.pal ?? {}).map(k => [k, k === "k" ? "#12161E" : k === "c" ? "#3F7F86" : "#8FD8D8"]));
+  return compose(`ghost|${base}`, base, pal);
 }
 
 export function relicSprite(id: RelicId, tier: number) {
@@ -617,7 +706,7 @@ export function drawMap(
   const blit = (cv: HTMLCanvasElement | null, px: number, py: number, alpha = 1) => {
     if (!cv) return;
     ctx.globalAlpha = alpha;
-    ctx.drawImage(cv, 0, 0, 8, 8, Math.round(px), Math.round(py), ts, ts);
+    ctx.drawImage(cv, 0, 0, cv.width, cv.height, Math.round(px), Math.round(py), ts, ts);
     ctx.globalAlpha = 1;
   };
 
@@ -777,15 +866,25 @@ export function drawFx(ctx: CanvasRenderingContext2D, fx: Fx, t: number, ts: num
     case "arrow": case "thrust": case "bolt": case "gaze": case "web": case "fire": {
       const x = lerp(ax, bx, ease), y = lerp(ay, by, ease);
       const ang = Math.atan2(by - ay, bx - ax);
-      if (fx.k === "arrow" || fx.k === "thrust") {
+      if (fx.k === "thrust") {
+        const reach = Math.sin(t * Math.PI);           // out, then back
+        const len = Math.hypot(bx - ax, by - ay) * reach;
+        ctx.translate(ax, ay); ctx.rotate(ang);
+        ctx.strokeStyle = "#8B5A2B"; ctx.lineWidth = Math.max(2, ts * 0.09);
+        ctx.beginPath(); ctx.moveTo(ts * 0.2, 0); ctx.lineTo(len, 0); ctx.stroke();
+        ctx.fillStyle = "#E8ECF0";
+        ctx.beginPath(); ctx.moveTo(len + ts * 0.22, 0); ctx.lineTo(len, -ts * 0.12); ctx.lineTo(len, ts * 0.12); ctx.fill();
+        break;
+      }
+      if (fx.k === "arrow") {
         // a little arrow: shaft and head pointing the way it flies
         ctx.translate(x, y); ctx.rotate(ang);
-        ctx.strokeStyle = fx.k === "arrow" ? "#D8C8A8" : "#C9CFD6";
+        ctx.strokeStyle = "#D8C8A8";
         ctx.lineWidth = Math.max(2, ts * 0.1);
         ctx.beginPath(); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(ts * 0.25, 0); ctx.stroke();
         ctx.fillStyle = "#F4F6F8";
         ctx.beginPath(); ctx.moveTo(ts * 0.45, 0); ctx.lineTo(ts * 0.15, -ts * 0.17); ctx.lineTo(ts * 0.15, ts * 0.17); ctx.fill();
-        if (fx.k === "arrow") {   // fletching
+        {   // fletching
           ctx.strokeStyle = "#C04A3B"; ctx.lineWidth = Math.max(1.5, ts * 0.07);
           ctx.beginPath(); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(-ts * 0.55, -ts * 0.12); ctx.moveTo(-ts * 0.45, 0); ctx.lineTo(-ts * 0.55, ts * 0.12); ctx.stroke();
         }

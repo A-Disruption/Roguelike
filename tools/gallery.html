@@ -30,7 +30,7 @@
         const f = document.createElement("figure");
         const cv = document.createElement("canvas"); cv.width = 64; cv.height = 64;
         const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false;
-        if (src) cx.drawImage(src, 0, 0, 8, 8, 0, 0, 64, 64);
+        if (src) cx.drawImage(src, 0, 0, src.width, src.height, 0, 0, 64, 64);
         const c = document.createElement("figcaption"); c.textContent = label;
         f.append(cv, c); row.append(f);
       }
@@ -66,7 +66,7 @@
       ["key", spriteCanvas("key")], ["ember", spriteCanvas("ember")], ["waystone", spriteCanvas("waystone")], ["echoes", spriteCanvas("echoes")], ["frost scroll", spriteCanvas("frost")], ["storm scroll", spriteCanvas("storm")], ["merchant", spriteCanvas("vendor")],
     ]);
     section("Relics (tier I / II / III)", RELIC_IDS.flatMap(id => [1, 2, 3].map(t => [`${RELICS[id].name} ${"I".repeat(t)}`, relicSprite(id, t)])));
-    section("Ghosts & graves", [["ghost", ghostSprite("wanderer", -1, -1)], ["ghost, sword", ghostSprite("wanderer", 1, 2)], ["ghost, kingsbane", ghostSprite("wanderer", 4, 4)], ["grave", spriteCanvas("grave")]]);
+    section("Ghosts & graves", [...CLASS_IDS.map(id => [`${id} ghost`, ghostSprite(id, -1, -1)]), ["grave", spriteCanvas("grave")]]);
     section("Traps", [["spikes", spriteCanvas("spikes")], ["pit", spriteCanvas("pit")], ["alarm", spriteCanvas("alarm")], ["stairs", spriteCanvas("stairs")]]);
   </script>
 </body>

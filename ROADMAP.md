@@ -45,6 +45,13 @@ Tick things off as they ship. Ideas can move between sections or be crossed out 
 - [x] **New monster tricks** — goblin archers shoot from range, slimes split when hit, ghosts drift through walls
 - [x] **Traps** — hidden spikes, pits that drop you a floor, alarm plates that wake the whole floor; you can spot them when close
 
+## Done — v1.7 "Heroes that feel different"
+
+- [x] **Arrows and firebolts follow their target** to where it ends up after it moves
+- [x] **Reaching Gauntlet is now a 2-tile spear jab** (60/80/100% damage by tier) instead of a bow for everyone; it gives a Ranger's bow +1 range
+- [x] **Signature abilities** — Wanderer scavenges extra loot (25%), Knight blocks 1 in 4 melee hits, Rogue backstabs unaware monsters for double damage; Ranger's bow is a class feature
+- [x] **16×16 hero sprites** with their own weapons (staff + orb, bow + quiver, sword + shield + plume, twin daggers, lantern); found weapons recolor the hero's own weapon by tier
+
 ## Done — v1.6 "Spells, merchants & balance"
 
 - [x] **Balance** — echo upgrades cost far more (no more maxing in one run); Ranger reach 3; reach attacks deal 80%; enemy archers / void eyes shoot from 4 tiles; Magma Heart lava only answers melee hits
