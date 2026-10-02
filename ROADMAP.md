@@ -2,6 +2,16 @@
 
 Tick things off as they ship. Ideas can move between sections or be crossed out (`~~like this~~`) if we decide against them.
 
+## Done — v1.5 "Bosses, collection & new maps"
+
+- [x] **New map generator** — three layout families (mixed-shape rooms, big obstacle halls, organic caverns) with zone decorations: pillars, rubble, water pools, lava rivers with bridges, Abyss chasms you can see across but not cross. Every walkable tile is guaranteed reachable without crossing lava
+- [x] **Unique bosses every 5 floors** — Rat King (summons rats), Broodmother (webs + spiderlings), Bone Lich (armor-piercing bolts, raises skeletons, blinks away), Forge Golem (telegraphed slam), Void Maw (pulls you in, telegraphed beam). Boss arenas, health bar, red danger tiles
+- [x] **Bestiary & achievements** — Collection tab with bestiary (variants, kills), relics, zones, heroes and 24 feats; tap any tile for details
+- [x] **Pause / inventory** — tap the hero portrait for stats, gear, pack, relics and known potions
+- [x] **Tabbed main screen** — Play, Upgrades, Collection, More
+- [x] **Upgrades go much further** — Vigor 20, Edge 15, Hide 10, Lantern 4, Satchel 6, Greed 10 levels (dailies still start without them)
+- [x] **Ranger fixes** — 4-tile bow, amber brackets on targets in reach, clear "too far" message, one careful step when tapping a far tile while watched
+
 ## Done — v1.4 "Themed zones"
 
 - [x] **Five zones, four floors each** — The Cellars → The Caves → The Flooded Crypt → The Forge → The Abyss, each with its own colors and title card
@@ -51,13 +61,11 @@ The client side is already shaped for this: `RunRecord` in `src/game/replay.ts` 
 ## Medium
 
 - [ ] **Shops** — a merchant on some floors who takes echoes mid-run
-- [ ] **Bestiary & achievements** — a collection page that fills in as you meet monsters and find relics
 - [ ] **Relic choice** — wardens offer "pick one of three" instead of a random relic
 - [ ] **Hot-seat co-op** — two heroes on one device, taking turns
 
 ## Big features (each its own pass)
 
-- [ ] **Unique boss fights** — give each zone's warden its own special attacks (they're recolored wardens today)
 - [ ] **More heroes** — e.g. a Beastmaster with a pet, a Cleric who heals
 
 ## Rules changes checklist

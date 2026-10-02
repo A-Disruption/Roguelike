@@ -11,7 +11,8 @@ import {
 import { makeRecord, replayRecord, resultOf, sameResult, buildGhost, encodeRecord, decodeRecord } from "../src/game/replay.ts";
 import { RELIC_IDS } from "../src/game/relics.ts";
 import { CLASS_IDS, CLASSES, isUnlocked } from "../src/game/classes.ts";
-import { ZONES, zoneIndex, zoneOf, isBossFloor } from "../src/game/zones.ts";
+import { ZONES, zoneIndex, zoneOf, isBossFloor, bossFor } from "../src/game/zones.ts";
+import { CHASM, blocksMove } from "../src/game/tiles.ts";
 
 // make the test's own choices reproducible: SEED=123 npm test reruns a failure exactly
 {
@@ -173,8 +174,8 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
 // zones: terrain, monsters and wardens per zone, and the stairs are always reachable
 {
   const g = newRun({ mode: "free", seed: 4242, day: null, start: startStats(freshMeta(), "wanderer"), ranked: false, startedAt: 1 });
-  const seenTiles = ZONES.map(() => ({ water: 0, lava: 0, floor: 0, floors: 0 }));
-  for (let d = 2; d <= 24; d++) {
+  const seenTiles = ZONES.map(() => ({ water: 0, lava: 0, floor: 0, floors: 0 } as Record<string, number>));
+  for (let d = 2; d <= 30; d++) {
     for (const choice of ["s", "r"] as const) {
       const h = { ...g, mons: [], items: [], traps: [] } as Game;
       Object.assign(h, { depth: d - 1, floorKey: `${d - 1}s`, hp: 99, maxHp: 99 });
@@ -187,7 +188,7 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
       const q = [idx(h.p.x, h.p.y)];
       for (let k = 0; k < q.length; k++) for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
         const x = q[k] % 31 + dx, y = Math.floor(q[k] / 31) + dy, i = idx(x, y);
-        if (!inB(x, y) || reach.has(i) || h.grid[i] === WALL || h.grid[i] === LAVA) continue;
+        if (!inB(x, y) || reach.has(i) || blocksMove(h.grid[i]) || h.grid[i] === LAVA) continue;
         reach.add(i); q.push(i);
       }
       for (const st of [STAIRS, STAIRS_RISK]) {
@@ -195,26 +196,40 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
         if (i < 0 || !reach.has(i)) throw new Error(`floor ${h.floorKey}: stairs ${st} unreachable`);
       }
       if (h.grid[idx(h.p.x, h.p.y)] !== FLOOR) throw new Error(`floor ${h.floorKey}: start tile is ${h.grid[idx(h.p.x, h.p.y)]}`);
+      // no walkable pocket anywhere is cut off from the start
+      h.grid.forEach((v, i) => {
+        if (!blocksMove(v) && v !== LAVA && !reach.has(i)) throw new Error(`floor ${h.floorKey}: unreachable tile ${i % 31},${Math.floor(i / 31)}`);
+      });
+      t.chasm = (t.chasm ?? 0) + h.grid.filter(v => v === CHASM).length;
+      const open = h.grid.filter(v => !blocksMove(v)).length;
+      t.minOpen = Math.min(t.minOpen ?? 1e9, open); t.maxOpen = Math.max(t.maxOpen ?? 0, open);
       // monsters belong to the zone, stand on solid floor, and wardens guard every zone's last floor
       const pool = new Set(zoneOf(h.depth).pool.map(([k]) => k));
       for (const m of h.mons) {
-        if (m.kind === "warden" || m.kind === "mimic") continue;
+        if (m.boss || m.kind === "mimic") continue;
         if (!pool.has(m.kind)) throw new Error(`${m.kind} spawned in ${zoneOf(h.depth).name}`);
         if (h.grid[idx(m.x, m.y)] !== FLOOR) throw new Error(`${m.kind} spawned on tile ${h.grid[idx(m.x, m.y)]}`);
       }
-      const warden = h.mons.find(m => m.kind === "warden");
-      if (isBossFloor(h.depth) !== !!warden) throw new Error(`floor ${h.depth}: warden ${warden ? "present" : "missing"}`);
-      if (warden && warden.variant !== z + 1) throw new Error(`wrong warden in zone ${z}: ${warden.name}`);
+      const boss = h.mons.filter(m => m.boss);
+      if (isBossFloor(h.depth) ? boss.length !== 1 : boss.length) throw new Error(`floor ${h.depth}: ${boss.length} bosses`);
+      if (boss[0] && boss[0].kind !== bossFor(h.depth)) throw new Error(`wrong boss on floor ${h.depth}: ${boss[0].kind}`);
+      if (boss[0] && cheb(boss[0], { x: h.grid.indexOf(STAIRS) % 31, y: Math.floor(h.grid.indexOf(STAIRS) / 31) }) > 8) throw new Error("boss is not guarding the stairs");
       if (h.traps.some(tr => tr.t === "pit") && isBossFloor(h.depth)) throw new Error("pit on a boss floor");
     }
   }
   if (seenTiles[2].water === 0) throw new Error("the Flooded Crypt has no water");
+  if (seenTiles[4].chasm === 0) throw new Error("the Abyss has no chasms");
+  for (const [i, t] of seenTiles.entries()) {
+    // layouts should vary: the most open floor in a zone is clearly bigger than the tightest
+    if (t.maxOpen - t.minOpen < 60) throw new Error(`zone ${i} floors all look alike (${t.minOpen}-${t.maxOpen} open tiles)`);
+  }
+  console.log("open tiles per zone (min-max):", seenTiles.map(t => `${t.minOpen}-${t.maxOpen}`).join(" "));
   if (seenTiles[3].lava === 0) throw new Error("the Forge has no lava");
-  if (seenTiles[0].water + seenTiles[0].lava + seenTiles[1].water + seenTiles[1].lava > 0) throw new Error("water/lava outside its zone");
+  if (seenTiles[0].water + seenTiles[0].lava + seenTiles[1].water + seenTiles[1].lava + seenTiles[0].chasm > 0) throw new Error("water/lava/chasm outside its zone");
   if (seenTiles[1].floor / seenTiles[1].floors <= seenTiles[0].floor / seenTiles[0].floors) throw new Error("caves aren't more open than cellars");
 
   // the Abyss dims your light
-  const abyss = { ...g, depth: 17 } as Game;
+  const abyss = { ...g, depth: 21 } as Game;
   if (sightOf(abyss) !== sightOf(g) - 1) throw new Error("abyss sight penalty missing");
 }
 
@@ -250,6 +265,67 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
   const before = c.hp;
   applyAction(c, stepAction(1, 0), noFlash);
   if (c.hp >= before || !c.log.some(l => l.startsWith("Lava!"))) throw new Error("lava did not burn");
+}
+
+// bosses: each one's special move does what it says
+{
+  const arena = (depth: number) => {
+    const g = newRun({ mode: "free", seed: 4040 + depth, day: null, start: startStats(freshMeta(), "wanderer"), ranked: false, startedAt: 1 });
+    while (g.depth < depth) descend(g, "s");
+    const boss = g.mons.find(m => m.boss)!;
+    g.mons = [boss]; g.items = []; g.traps = []; g.hazards = [];
+    g.grid.fill(FLOOR);
+    for (let x = 0; x < 31; x++) { g.grid[idx(x, 0)] = WALL; g.grid[idx(x, 28)] = WALL; }
+    for (let y = 0; y < 29; y++) { g.grid[idx(0, y)] = WALL; g.grid[idx(30, y)] = WALL; }
+    g.maxHp = g.hp = 9999;
+    boss.x = 15; boss.y = 14; boss.alerted = true; boss.hp = 99999;
+    return { g, boss };
+  };
+  const turns = (g: Game, n: number) => { for (let i = 0; i < n && !g.dead; i++) endTurn(g, noFlash); };
+
+  // Rat King calls rats
+  { const { g, boss } = arena(5); if (boss.kind !== "ratking") throw new Error(`floor 5 boss is ${boss.kind}`);
+    g.p = { x: 15, y: 18 }; turns(g, 4);
+    if (!g.mons.some(m => m.kind === "rat")) throw new Error("Rat King summoned no rats");
+    if (g.mons.filter(m => m.kind === "rat").some(m => m.gen !== 1)) throw new Error("summons should be worth half"); }
+  // Broodmother webs you from range, and you struggle instead of moving
+  { const { g, boss } = arena(10); if (boss.kind !== "broodmother") throw new Error(`floor 10 boss is ${boss.kind}`);
+    g.p = { x: 15, y: 18 }; boss.cd = 3; turns(g, 1);
+    if (g.webbed <= 0) throw new Error("Broodmother did not web");
+    const at = { ...g.p };
+    applyAction(g, stepAction(1, 1), noFlash);
+    if (g.p.x !== at.x || g.p.y !== at.y) throw new Error("walked while webbed");
+    turns(g, 4);
+    if (g.webbed !== 0) throw new Error("web never wore off"); }
+  // Bone Lich raises skeletons
+  { const { g, boss } = arena(15); if (boss.kind !== "lich") throw new Error(`floor 15 boss is ${boss.kind}`);
+    g.p = { x: 15, y: 21 }; boss.cd = 3; turns(g, 1);
+    if (!g.mons.some(m => m.kind === "skeleton")) throw new Error("Lich raised no skeletons"); }
+  // Forge Golem: the slam hits you if you stay in the red, misses if you leave
+  for (const leave of [false, true]) {
+    const { g, boss } = arena(20); if (boss.kind !== "golem") throw new Error(`floor 20 boss is ${boss.kind}`);
+    g.p = { x: 17, y: 14 }; boss.cd = 2; boss.tick = 1;          // its next turn is an active one
+    turns(g, 1);
+    if (!boss.charge || !g.marks.some(([x, y]) => x === g.p.x && y === g.p.y)) throw new Error("Golem did not telegraph a slam on you");
+    if (leave) g.p = { x: 22, y: 14 };
+    const hp = g.hp;
+    turns(g, 2);                                                   // slow: skips a turn, then slams
+    if (boss.charge) throw new Error("slam never landed");
+    if (leave ? g.hp < hp : g.hp >= hp) throw new Error(`slam ${leave ? "hit you after you left" : "missed you standing in the red"}`);
+  }
+  // Void Maw drags you in, then beams your line
+  { const { g, boss } = arena(25); if (boss.kind !== "maw") throw new Error(`floor 25 boss is ${boss.kind}`);
+    g.p = { x: 15, y: 20 }; boss.cd = 1; boss.tick = 1;
+    turns(g, 1);
+    if (g.p.y !== 18) throw new Error(`Maw pull put you at ${g.p.y}, expected 18`);
+    boss.cd = 3; boss.tick = 1; turns(g, 1);
+    if (boss.charge !== 2 || !g.marks.some(([x, y]) => x === g.p.x && y === g.p.y)) throw new Error("Maw did not mark your line"); }
+  // beating a boss counts for unlocks and drops a relic
+  { const { g, boss } = arena(5); boss.hp = 1; g.p = { x: 15, y: 15 }; g.atk = 999;
+    const items = g.items.length;
+    applyAction(g, stepAction(0, -1), noFlash);
+    if (g.wardens !== 1 || g.dex.kills.ratking !== 1) throw new Error("boss kill not counted");
+    if (!g.items.slice(items).some(i => i.t === "relic")) throw new Error("boss dropped no relic"); }
 }
 
 // the same daily seed gives the same floors to everyone, whatever they do
@@ -325,7 +401,7 @@ if (stats.zonesReached < ZONES.length) throw new Error(`deep dives only reached 
   const shadow = POTION_EFFECTS.findIndex(e => e.k === "shadow");
   if (!rogue.known[shadow] || rogue.relics.feather !== 3 || rogue.inv.waystone !== 1) throw new Error("rogue kit wrong");
   if (wand.known.some(Boolean)) throw new Error("wanderer should know no potions");
-  if (ranger.relics.reach !== 2 || ranger.sight !== 7) throw new Error("ranger kit wrong");
+  if (ranger.relics.reach !== 3 || ranger.sight !== 7) throw new Error("ranger kit wrong");
   // same seed, same map, whatever the hero
   if (serializeRun(knight).G !== serializeRun(mage).G) throw new Error("class changed the map");
   // the mage's embers hit harder than the wanderer's on the same roll

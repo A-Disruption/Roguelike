@@ -1,18 +1,23 @@
 import { Rng, hashStr } from "./rng.ts";
 import { RELICS, RELIC_IDS, TIER_NAMES, type RelicId } from "./relics.ts";
 import { CLASS_IDS, classOf, type ClassId } from "./classes.ts";
-import { zoneOf, zoneIndex, isBossFloor } from "./zones.ts";
+import { zoneOf, zoneIndex, isBossFloor, bossFor } from "./zones.ts";
+import { generateLevel, type Level } from "./mapgen.ts";
+import {
+  MW, MH, WALL, FLOOR, STAIRS, STAIRS_RISK, LAVA, isStairs, blocksMove, idx, inB, center,
+  type Pt, type Room,
+} from "./tiles.ts";
+export {
+  MW, MH, VW, VH, WALL, FLOOR, STAIRS, STAIRS_RISK, WATER, LAVA, CHASM, isStairs, blocksMove, idx, inB,
+} from "./tiles.ts";
+export type { Pt, Room } from "./tiles.ts";
 
 /* ============================ constants ============================ */
 
 /* Bump whenever a change would make old seeds/replays play out differently.
    Runs only compare (and ghosts only replay) between matching rules versions. */
-export const RULES_VERSION = 3;
+export const RULES_VERSION = 4;
 
-export const MW = 31, MH = 29;          // map size
-export const VW = 11, VH = 13;          // viewport in tiles
-export const WALL = 0, FLOOR = 1, STAIRS = 2, STAIRS_RISK = 3, WATER = 4, LAVA = 5;
-export const isStairs = (v: number) => v === STAIRS || v === STAIRS_RISK;
 
 export const C = {
   void:    "#080A0E",
@@ -28,7 +33,7 @@ export const C = {
   dim:     "#7C8794",
 };
 
-type MonBase = {
+export type MonBase = {
   k: string; g: string; name: string; hp: number; atk: number; def: number; xp: number; ech: number;
   min: number; max?: number; erratic?: boolean; pierce?: boolean; slow?: boolean; boss?: boolean;
   ranged?: boolean;      // shoots arrows from a distance
@@ -53,10 +58,16 @@ const MONSTERS: MonBase[] = [
   { k:"ogre",    g:"O", name:"ogre",        hp:36, atk:15, def:2, xp:22, ech:16, min:8,  max:99, slow:true, gear:"both" },
   { k:"mimic",   g:"m", name:"mimic",       hp:22, atk:8,  def:1, xp:15, ech:20, min:3,  noPool:true },
   /* zone monsters */
-  { k:"spider",  g:"x", name:"cave spider", hp:10, atk:5,  def:0, xp:7,  ech:5,  min:5,  fast:true },
-  { k:"drowned", g:"z", name:"drowned one", hp:30, atk:9,  def:1, xp:14, ech:11, min:9,  slow:true },
-  { k:"imp",     g:"i", name:"fire imp",    hp:14, atk:9,  def:1, xp:15, ech:12, min:13, erratic:true, explodes:true, fireproof:true },
-  { k:"eye",     g:"e", name:"void eye",    hp:18, atk:12, def:0, xp:20, ech:16, min:17, ranged:true, pierce:true },
+  { k:"spider",  g:"x", name:"cave spider", hp:10, atk:5,  def:0, xp:7,  ech:5,  min:6,  fast:true },
+  { k:"drowned", g:"z", name:"drowned one", hp:30, atk:9,  def:1, xp:14, ech:11, min:11, slow:true },
+  { k:"imp",     g:"i", name:"fire imp",    hp:14, atk:9,  def:1, xp:15, ech:12, min:16, erratic:true, explodes:true, fireproof:true },
+  { k:"eye",     g:"e", name:"void eye",    hp:18, atk:12, def:0, xp:20, ech:16, min:21, ranged:true, pierce:true },
+  /* bosses: one guards the last floor of each zone (see bossAct) */
+  { k:"ratking",     g:"R", name:"Rat King",     hp:55,  atk:7,  def:1, xp:40,  ech:45,  min:5,  boss:true, noPool:true },
+  { k:"broodmother", g:"B", name:"Broodmother",  hp:85,  atk:9,  def:1, xp:60,  ech:60,  min:10, boss:true, noPool:true },
+  { k:"lich",        g:"L", name:"Bone Lich",    hp:100, atk:11, def:2, xp:80,  ech:75,  min:15, boss:true, noPool:true, ranged:true, pierce:true },
+  { k:"golem",       g:"F", name:"Forge Golem",  hp:170, atk:15, def:4, xp:100, ech:90,  min:20, boss:true, noPool:true, slow:true, fireproof:true },
+  { k:"maw",         g:"M", name:"Void Maw",     hp:200, atk:16, def:2, xp:130, ech:110, min:25, boss:true, noPool:true, slow:true },
 ];
 const WARDEN: MonBase = { k:"warden", g:"W", name:"warden of the deep", hp:40, atk:11, def:2, xp:45, ech:55, min:5, boss:true };
 
@@ -138,13 +149,18 @@ export const POTION_EFFECTS = [
 
 export const TRAP_NAMES = { spikes: "spike trap", pit: "hidden pit", alarm: "alarm plate" } as const;
 
+/* each level costs a bit more than the last (rounded to 5s) */
+const upCosts = (base: number, growth: number, n: number) =>
+  Array.from({ length: n }, (_, i) => Math.round(base * growth ** i / 5) * 5);
+
+/* Echo upgrades only apply to free runs; daily runs always start from scratch. */
 export const UPGRADES = [
-  { k:"vigor",   name:"Vigor",   blurb:"+7 health",        max:5, costs:[20,35,55,80,110] },
-  { k:"edge",    name:"Edge",    blurb:"+1 attack",        max:5, costs:[30,50,75,105,140] },
-  { k:"hide",    name:"Hide",    blurb:"+1 armor",         max:3, costs:[45,85,140] },
-  { k:"lantern", name:"Lantern", blurb:"+1 tile of sight", max:2, costs:[60,125] },
-  { k:"satchel", name:"Satchel", blurb:"start with a tonic",max:3, costs:[25,45,70] },
-  { k:"greed",   name:"Greed",   blurb:"+20% echoes",      max:3, costs:[40,70,110] },
+  { k:"vigor",   name:"Vigor",   blurb:"+7 health",          max:20, costs: upCosts(20, 1.17, 20) },
+  { k:"edge",    name:"Edge",    blurb:"+1 attack",          max:15, costs: upCosts(30, 1.2, 15) },
+  { k:"hide",    name:"Hide",    blurb:"+1 armor",           max:10, costs: upCosts(45, 1.25, 10) },
+  { k:"lantern", name:"Lantern", blurb:"+1 tile of sight",   max:4,  costs: upCosts(60, 1.7, 4) },
+  { k:"satchel", name:"Satchel", blurb:"start with a tonic", max:6,  costs: upCosts(25, 1.4, 6) },
+  { k:"greed",   name:"Greed",   blurb:"+20% echoes",        max:10, costs: upCosts(40, 1.3, 10) },
 ];
 export type Upgrade = typeof UPGRADES[number];
 
@@ -152,8 +168,6 @@ export type Upgrade = typeof UPGRADES[number];
 
 export type FlashKind = "hit" | "hurt" | "arrow";
 export type Flash = (i: number, kind: FlashKind) => void;
-export type Pt = { x: number; y: number };
-export type Room = { x: number; y: number; w: number; h: number };
 
 export type Mon = {
   kind: string; glyph: string; name: string;
@@ -167,8 +181,14 @@ export type Mon = {
   gen: number;       // how many times a slime has split
   alerted: boolean;  // knows where you are no matter what
   disguised: boolean;// a mimic still pretending to be a chest
+  cd: number;        // bosses: turns since their last special attack
+  charge: number;    // bosses: a telegraphed attack about to land (1 slam, 2 beam)
   tick: number; x: number; y: number;
 };
+
+/* what you've met and found, for the bestiary and achievements */
+export type Dex = { seen: Record<string, number>; kills: Record<string, number>; relics: Record<string, number> };
+export const freshDex = (): Dex => ({ seen: {}, kills: {}, relics: {} });
 
 export type Pocket = "tonic" | "ember" | "waystone" | "key";
 export type ItemType = Pocket | "weapon" | "armor" | "echoes" | "potion" | "chest" | "relic";
@@ -217,8 +237,11 @@ export type Game = {
   relics: Partial<Record<RelicId, number>>; // relic -> tier
   killsSinceEmber: number;
   perils: number;        // perilous stairs taken
-  wardens: number;       // wardens slain this run (for unlocks)
+  wardens: number;       // bosses slain this run (for unlocks)
   chests: number;        // chests opened this run (for unlocks)
+  webbed: number;        // turns left stuck in a web
+  marks: [number, number][]; // tiles a boss is about to hit (shown in red)
+  dex: Dex;
   level: number; xp: number; next: number;
   echoes: number; greed: number; kills: number; turns: number;
   log: string[];
@@ -227,14 +250,15 @@ export type Game = {
 
 export type Meta = {
   echoes: number; best: number; runs: number; kills: number; up: Record<string, number>;
-  wardens: number; chests: number;  // lifetime counters that unlock heroes
+  wardens: number; chests: number;  // lifetime counters that unlock heroes (wardens = bosses slain)
   cls: ClassId;                     // hero picked for the next free run
+  dex: Dex;                         // lifetime bestiary
+  ach: string[];                    // achievements earned
+  maxPerils: number; dailies: number; maxEarned: number;
 };
 
 /* ============================ helpers ============================ */
 
-export const idx = (x: number, y: number) => y * MW + x;
-export const inB = (x: number, y: number) => x >= 0 && y >= 0 && x < MW && y < MH;
 export const cheb = (a: Pt, b: Pt) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 /* the 8 step directions; a move action stores the index into this list */
 export const DIRS8 = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]] as const;
@@ -253,105 +277,7 @@ export function scoreOf(g: Game) {
   return g.depth * 100 + g.kills * 10 + g.echoes + g.perils * 50;
 }
 
-function ctr(r: Room): Pt { return { x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) }; }
-
-function hall(grid: Uint8Array, from: number, to: number, fixed: number, horiz: boolean) {
-  const [a, b] = from < to ? [from, to] : [to, from];
-  for (let i = a; i <= b; i++) {
-    const x = horiz ? i : fixed, y = horiz ? fixed : i;
-    if (inB(x, y)) grid[idx(x, y)] = FLOOR;
-  }
-}
-
-function genLevel(r: Rng, depth: number): { grid: Uint8Array; rooms: Room[] } {
-  const grid = new Uint8Array(MW * MH);
-  const rooms: Room[] = [];
-  for (let t = 0; t < 120 && rooms.length < 9; t++) {
-    const w = r.range(4, 8), h = r.range(3, 6);
-    const x = r.range(1, MW - w - 2), y = r.range(1, MH - h - 2);
-    if (rooms.some(o => x <= o.x + o.w + 1 && o.x <= x + w + 1 && y <= o.y + o.h + 1 && o.y <= y + h + 1)) continue;
-    rooms.push({ x, y, w, h });
-  }
-  rooms.forEach(rm => {
-    for (let y = rm.y; y < rm.y + rm.h; y++) for (let x = rm.x; x < rm.x + rm.w; x++) grid[idx(x, y)] = FLOOR;
-  });
-  for (let i = 1; i < rooms.length; i++) {
-    const a = ctr(rooms[i - 1]), b = ctr(rooms[i]);
-    if (r.chance(0.5)) { hall(grid, a.x, b.x, a.y, true); hall(grid, a.y, b.y, b.x, false); }
-    else { hall(grid, a.y, b.y, a.x, false); hall(grid, a.x, b.x, b.y, true); }
-  }
-  if (rooms.length < 3) return genLevel(r, depth);
-  addZoneFeatures(grid, rooms, depth, r);
-  // two ways down: the usual stair in the last room, a perilous one in another
-  const st = ctr(rooms[rooms.length - 1]);
-  grid[idx(st.x, st.y)] = STAIRS;
-  const risk = ctr(rooms[rooms.length - 2]);
-  grid[idx(risk.x, risk.y)] = STAIRS_RISK;
-  return { grid, rooms };
-}
-
-const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
-
-/* tiles reachable from `from` without walking through walls or lava */
-function reachable(grid: Uint8Array, from: Pt) {
-  const seen = new Uint8Array(MW * MH);
-  const q = [idx(from.x, from.y)];
-  seen[q[0]] = 1;
-  for (let h = 0; h < q.length; h++) {
-    const cx = q[h] % MW, cy = (q[h] / MW) | 0;
-    for (const [dx, dy] of DIRS4) {
-      const nx = cx + dx, ny = cy + dy;
-      if (!inB(nx, ny)) continue;
-      const ni = idx(nx, ny);
-      if (seen[ni] || grid[ni] === WALL || grid[ni] === LAVA) continue;
-      seen[ni] = 1; q.push(ni);
-    }
-  }
-  return seen;
-}
-
-/* the zone's terrain twist: ragged cave walls, pools of water, rivers of lava */
-function addZoneFeatures(grid: Uint8Array, rooms: Room[], depth: number, r: Rng) {
-  const feature = zoneOf(depth).feature;
-  // room centers (start and stairs) and the tiles around them always stay plain floor
-  const keep = new Set<number>();
-  for (const rm of rooms) {
-    const c = ctr(rm);
-    keep.add(idx(c.x, c.y));
-    for (const [dx, dy] of DIRS4) keep.add(idx(c.x + dx, c.y + dy));
-  }
-  if (feature === "caverns") {
-    const carve: number[] = [];
-    for (let y = 2; y < MH - 2; y++) for (let x = 2; x < MW - 2; x++) {
-      const i = idx(x, y);
-      if (grid[i] !== WALL) continue;
-      if (DIRS4.some(([dx, dy]) => grid[idx(x + dx, y + dy)] !== WALL) && r.chance(0.22)) carve.push(i);
-    }
-    for (const i of carve) grid[i] = FLOOR;
-  } else if (feature === "water" || feature === "lava") {
-    const tile = feature === "water" ? WATER : LAVA;
-    rooms.forEach((rm, k) => {
-      if (k === 0) return;
-      if (feature === "lava" && (rm.w < 4 || rm.h < 4)) return; // never wall off a narrow room
-      if (!r.chance(feature === "water" ? 0.6 : 0.5)) return;
-      const cx = r.range(rm.x, rm.x + rm.w - 1), cy = r.range(rm.y, rm.y + rm.h - 1);
-      const rad = feature === "water" ? r.range(1, 2) : 1;
-      for (let y = cy - rad; y <= cy + rad; y++) for (let x = cx - rad; x <= cx + rad; x++) {
-        if (x < rm.x || x >= rm.x + rm.w || y < rm.y || y >= rm.y + rm.h) continue;
-        if (Math.abs(x - cx) + Math.abs(y - cy) > rad) continue;
-        const i = idx(x, y);
-        if (keep.has(i) || grid[i] !== FLOOR) continue;
-        grid[i] = tile;
-      }
-    });
-    if (feature === "lava") {
-      // lava must never cut the way to either staircase; if it does, cool it all down
-      const seen = reachable(grid, ctr(rooms[0]));
-      const ok = [rooms[rooms.length - 1], rooms[rooms.length - 2]].every(rm => { const c = ctr(rm); return seen[idx(c.x, c.y)]; });
-      if (!ok) for (let i = 0; i < grid.length; i++) if (grid[i] === LAVA) grid[i] = FLOOR;
-    }
-  }
-}
+const ctr = center;
 
 function freeSpot(room: Room, grid: Uint8Array, taken: Set<number>, r: Rng): Pt | null {
   for (let t = 0; t < 40; t++) {
@@ -372,6 +298,10 @@ function tierFor<T>(depth: number, list: T[], r: Rng): T {
 /* ============================ monsters ============================ */
 
 const baseFor = (kind: string) => kind === "warden" ? WARDEN : MONSTERS.find(m => m.k === kind);
+export const monsterBase = baseFor;
+/* every kind the bestiary lists (the old warden only exists in pre-1.5 saves) */
+export const MONSTER_KINDS = MONSTERS.filter(m => !m.boss).map(m => m.k);
+export const BOSS_KINDS = MONSTERS.filter(m => m.boss).map(m => m.k);
 
 /* Builds a monster's stats from its kind, depth, color variant, gear and split
    generation. Saves only store those, so this must give the same answer every time. */
@@ -398,7 +328,7 @@ function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1, g
     ranged: !!base.ranged, phase: !!base.phase, splits: !!base.splits,
     fast: !!base.fast, explodes: !!base.explodes, fireproof: !!base.fireproof,
     variant: v ? variant : 0, wpn, arm, gen, alerted: false, disguised: false,
-    tick: 0,
+    cd: 0, charge: 0, tick: 0,
   };
 }
 
@@ -465,19 +395,19 @@ function dropNear(g: Game, x: number, y: number, it: Omit<Item, "x" | "y">, r: R
 
 /* ============================ level population ============================ */
 
-function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number, floorKey: string, r: Rng) {
+function populate(level: Level, depth: number, floorKey: string, r: Rng) {
   const risky = floorKey.endsWith("r");
   const mDepth = monDepth(depth, floorKey);
   const taken = new Set<number>();
   const mons: Mon[] = [], items: Item[] = [], traps: Trap[] = [];
-  const { grid, rooms } = level;
-  const start = ctr(rooms[0]);
+  const { grid, areas: rooms, start } = level;
   taken.add(idx(start.x, start.y));
   const anyRoom = () => rooms[r.range(1, rooms.length - 1)];
 
   rooms.forEach((rm, i) => {
     if (i === 0) return;
-    const n = (depth === 1 ? 1 : r.range(1, depth < 5 ? 2 : 3)) + (risky ? 1 : 0);
+    const big = rm.w * rm.h >= 60 ? 1 : 0;
+    const n = (depth === 1 ? 1 : r.range(1, depth < 5 ? 2 : 3)) + (risky ? 1 : 0) + big;
     for (let j = 0; j < n; j++) {
       const pool = zoneOf(depth).pool.filter(([, from]) => depth >= from).map(([k]) => k);
       const s = freeSpot(rm, grid, taken, r);
@@ -487,9 +417,14 @@ function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number, flo
   });
 
   if (isBossFloor(depth)) {
-    const rm = rooms[rooms.length - 1];
+    // the boss waits in its arena, beside the stairs, and clears the room of lesser monsters
+    const rm = rooms[level.stairsArea];
+    for (let i = mons.length - 1; i >= 0; i--) {
+      const m = mons[i];
+      if (m.x >= rm.x && m.x < rm.x + rm.w && m.y >= rm.y && m.y < rm.y + rm.h) mons.splice(i, 1);
+    }
     const s = freeSpot(rm, grid, taken, r) || ctr(rm);
-    mons.push({ ...makeMon("warden", mDepth, zoneIndex(depth) + 1)!, x: s.x, y: s.y });
+    mons.push({ ...makeMon(bossFor(depth), mDepth)!, x: s.x, y: s.y });
   }
 
   const nItems = r.range(3, 5) + (risky ? 2 : 0);
@@ -590,7 +525,7 @@ export function computeFov(g: Pick<Game, "sight" | "relics" | "depth" | "p" | "g
 export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
   const start = idx(g.p.x, g.p.y), goal = idx(tx, ty);
   if (start === goal) return null;
-  if (!g.seen[goal] || g.grid[goal] === WALL) return null;
+  if (!g.seen[goal] || blocksMove(g.grid[goal])) return null;
   const knownTrap = new Set(g.traps.filter(t => t.found).map(t => idx(t.x, t.y)));
   const prev = new Int32Array(MW * MH).fill(-1);
   const q = [start]; prev[start] = start;
@@ -604,7 +539,7 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
       if (!inB(nx, ny)) continue;
       const ni = idx(nx, ny);
       if (prev[ni] !== -1) continue;
-      if (!g.seen[ni] || g.grid[ni] === WALL) continue;
+      if (!g.seen[ni] || blocksMove(g.grid[ni])) continue;
       if (g.grid[ni] === LAVA && ni !== goal) continue;
       if (knownTrap.has(ni) && ni !== goal) continue;
       prev[ni] = cur; q.push(ni);
@@ -619,7 +554,18 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
 
 /* ============================ starting a run ============================ */
 
-export const freshMeta = (): Meta => ({ echoes: 0, best: 0, runs: 0, kills: 0, up: {}, wardens: 0, chests: 0, cls: "wanderer" });
+export const freshMeta = (): Meta => ({
+  echoes: 0, best: 0, runs: 0, kills: 0, up: {}, wardens: 0, chests: 0, cls: "wanderer",
+  dex: freshDex(), ach: [], maxPerils: 0, dailies: 0, maxEarned: 0,
+});
+
+/* fold a run's bestiary into another (lifetime) one */
+export function mergeDex(into: Dex, from: Dex): Dex {
+  const out: Dex = { seen: { ...into.seen, ...from.seen }, kills: { ...into.kills }, relics: { ...into.relics } };
+  for (const [k, n] of Object.entries(from.kills)) out.kills[k] = (out.kills[k] ?? 0) + n;
+  for (const [k, t] of Object.entries(from.relics)) out.relics[k] = Math.max(out.relics[k] ?? 0, t);
+  return out;
+}
 
 /* the hero's opening stats: the class, plus echo upgrades (daily runs pass a fresh Meta, so no upgrades) */
 export function startStats(meta: Meta, cls: ClassId): StartStats {
@@ -662,7 +608,7 @@ export type RunSetup = {
 export function newRun(s: RunSetup): Game {
   const floorKey = "1s";
   const fr = floorRng(s.seed, floorKey);
-  const lvl = genLevel(fr, 1);
+  const lvl = generateLevel(fr, 1);
   const pop = populate(lvl, 1, floorKey, fr);
   const pr = new Rng(hashStr(`${s.seed}:potions`));
   const g: Game = {
@@ -681,6 +627,7 @@ export function newRun(s: RunSetup): Game {
     potionMap: pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
     known: POTION_EFFECTS.map(() => false),
     hidden: 0, relics: { ...s.start.relics }, killsSinceEmber: 0, perils: 0, wardens: 0, chests: 0,
+    webbed: 0, marks: [], dex: freshDex(),
     level: 1, xp: 0, next: 12,
     echoes: 0, greed: s.start.greed, kills: 0, turns: 0,
     log: [s.mode === "daily"
@@ -698,10 +645,10 @@ export function descend(g: Game, choice: "s" | "r") {
   g.depth += 1;
   g.floorKey = `${g.depth}${choice}`;
   const fr = floorRng(g.seed, g.floorKey);
-  const lvl = genLevel(fr, g.depth);
+  const lvl = generateLevel(fr, g.depth);
   const pop = populate(lvl, g.depth, g.floorKey, fr);
   g.grid = lvl.grid;
-  g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps; g.hazards = [];
+  g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps; g.hazards = []; g.marks = []; g.webbed = 0;
   g.seen = new Uint8Array(MW * MH);
   g.p = { x: pop.start.x, y: pop.start.y };
   g.path = null;
@@ -722,6 +669,7 @@ export function descend(g: Game, choice: "s" | "r") {
     const z = zoneOf(g.depth);
     say(g, `${z.name}. ${z.intro}`);
   }
+  if (isBossFloor(g.depth)) say(g, "Something enormous is waiting near the stairs.");
 }
 
 export function say(g: Game, s: string) { g.log.push(s); if (g.log.length > 24) g.log.shift(); }
@@ -765,6 +713,7 @@ function killMon(g: Game, m: Mon) {
   if (!g.mons.includes(m)) return;
   g.mons = g.mons.filter(o => o !== m);
   g.kills += 1;
+  g.dex.kills[m.kind] = (g.dex.kills[m.kind] ?? 0) + 1;
   const coin = relicVal(g, "coin");
   g.echoes += m.ech + Math.round(m.ech * coin / 100);
   say(g, `The ${m.name} falls.`);
@@ -814,7 +763,7 @@ function killMon(g: Game, m: Mon) {
 function splitSlime(g: Game, m: Mon) {
   if (!m.splits || m.gen >= 2 || m.hp < 4) return;
   const spot = g.rng.shuffle(DIRS8.map(([dx, dy]) => ({ x: m.x + dx, y: m.y + dy }))).find(s =>
-    inB(s.x, s.y) && g.grid[idx(s.x, s.y)] !== WALL && g.grid[idx(s.x, s.y)] !== LAVA && !(s.x === g.p.x && s.y === g.p.y)
+    inB(s.x, s.y) && !blocksMove(g.grid[idx(s.x, s.y)]) && g.grid[idx(s.x, s.y)] !== LAVA && !(s.x === g.p.x && s.y === g.p.y)
     && !g.mons.some(o => o.x === s.x && o.y === s.y));
   if (!spot) return;
   const half = Math.floor(m.hp / 2);
@@ -825,22 +774,23 @@ function splitSlime(g: Game, m: Mon) {
   say(g, `The ${m.name} splits in two!`);
 }
 
-function strike(g: Game, m: Mon, flash: Flash) {
+function strike(g: Game, m: Mon, flash: Flash, verb: string) {
   const d = dmgRoll(g.rng, totalAtk(g), m.def);
   m.hp -= d;
   flash(idx(m.x, m.y), "hit");
   if (m.hp <= 0) { killMon(g, m); return false; }
-  say(g, `You hit the ${m.name} for ${d}.`);
+  say(g, `${verb} the ${m.name} for ${d}.`);
   return true;
 }
 
-export function playerAttack(g: Game, m: Mon, flash: Flash) {
+export function playerAttack(g: Game, m: Mon, flash: Flash, ranged = false) {
   m.alerted = true;
-  if (!strike(g, m, flash)) return;
+  const verb = !ranged ? "You hit" : g.start.cls === "ranger" ? "Your arrow hits" : "You strike";
+  if (!strike(g, m, flash, verb)) return;
   const twin = relicVal(g, "twin");
   if (twin && g.rng.chance(twin / 100)) {
     say(g, "Quicksilver! You strike again.");
-    if (!strike(g, m, flash)) return;
+    if (!strike(g, m, flash, verb)) return;
   }
   splitSlime(g, m);
 }
@@ -869,6 +819,147 @@ function onPlayerHit(g: Game, m: Mon, melee: boolean, flash: Flash) {
   }
 }
 
+/* open tiles around a point, in random order (for summons) */
+function freeAround(g: Game, c: Pt): Pt[] {
+  const out: Pt[] = [];
+  for (const [dx, dy] of DIRS8) {
+    const x = c.x + dx, y = c.y + dy;
+    if (!inB(x, y)) continue;
+    const v = g.grid[idx(x, y)];
+    if (blocksMove(v) || v === LAVA || (x === g.p.x && y === g.p.y) || g.mons.some(o => o.x === x && o.y === y)) continue;
+    out.push({ x, y });
+  }
+  return g.rng.shuffle(out);
+}
+
+/* summoned helpers are worth half (gen 1), so bosses can't be farmed */
+function summon(g: Game, boss: Mon, kind: string, n: number) {
+  let made = 0;
+  for (const s of freeAround(g, boss)) {
+    if (made >= n || g.mons.length >= 14) break;
+    g.mons.push({ ...makeMon(kind, monDepth(g.depth, g.floorKey), 0, -1, -1, 1)!, alerted: true, x: s.x, y: s.y });
+    made++;
+  }
+  return made;
+}
+
+/* the line a beam travels: the player's row or column, out to the walls */
+function beamLine(g: Game, from: Pt): [number, number][] {
+  const horiz = Math.abs(g.p.x - from.x) >= Math.abs(g.p.y - from.y);
+  const out: [number, number][] = [];
+  for (const dir of [-1, 1]) {
+    for (let k = dir === -1 ? 0 : 1; k < 31; k++) {
+      const x = horiz ? g.p.x + dir * k : g.p.x, y = horiz ? g.p.y : g.p.y + dir * k;
+      if (!inB(x, y) || g.grid[idx(x, y)] === WALL) break;
+      out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+/* A boss's special moves. Returns true if it used its turn. Big hits are
+   telegraphed: the tiles turn red one turn ahead so you can step out. */
+function bossAct(g: Game, m: Mon, aware: boolean, dist: number, flash: Flash): boolean {
+  if (m.charge) {
+    const kind = m.charge;
+    const marks = g.marks;
+    m.charge = 0; m.cd = 0; g.marks = [];
+    for (const [x, y] of marks) flash(idx(x, y), "hit");
+    say(g, kind === 1 ? `The ${m.name} SLAMS the ground!` : `The ${m.name}'s beam sears the line!`);
+    if (marks.some(([x, y]) => x === g.p.x && y === g.p.y)) {
+      const d = Math.round(m.atk * (kind === 1 ? 1.7 : 1.5));
+      say(g, `It catches you. -${d}.`);
+      flash(idx(g.p.x, g.p.y), "hurt");
+      hurtPlayer(g, d);
+    } else {
+      say(g, "You got clear just in time.");
+    }
+    return true;
+  }
+  if (!aware) return false;
+  m.alerted = true;
+  m.cd += 1;
+  const sees = los(g.grid, m.x, m.y, g.p.x, g.p.y);
+  switch (m.kind) {
+    case "ratking":
+      if (m.cd >= 3) {
+        m.cd = 0;
+        if (summon(g, m, "rat", 2)) { say(g, "The Rat King squeals! Rats pour out of the walls."); return true; }
+      }
+      return false;
+    case "broodmother":
+      if (m.cd >= 4) {
+        m.cd = 0;
+        if (g.webbed <= 0 && dist >= 2 && dist <= 5 && sees) {
+          for (const pt of between(m.x, m.y, g.p.x, g.p.y)) flash(idx(pt.x, pt.y), "arrow");
+          g.webbed = 3;
+          say(g, "The Broodmother spits a web! You're stuck for a moment.");
+          return true;
+        }
+        if (summon(g, m, "spider", 2)) { say(g, "Spiderlings burst from the Broodmother's sac!"); return true; }
+      }
+      return false;
+    case "lich":
+      if (dist === 1 && g.rng.chance(0.3)) {
+        const spots: number[] = [];
+        for (let i = 0; i < g.grid.length; i++) {
+          const x = i % MW, y = (i / MW) | 0;
+          const d = Math.max(Math.abs(x - g.p.x), Math.abs(y - g.p.y));
+          if (d >= 5 && d <= 9 && g.grid[i] === FLOOR && !g.mons.some(o => o.x === x && o.y === y)) spots.push(i);
+        }
+        if (spots.length) {
+          const t = g.rng.pick(spots);
+          m.x = t % MW; m.y = (t / MW) | 0;
+          say(g, "The Bone Lich blinks away in a swirl of ash!");
+          return true;
+        }
+      }
+      if (m.cd >= 4) {
+        m.cd = 0;
+        if (summon(g, m, "skeleton", 2)) { say(g, "The Bone Lich raises the dead!"); return true; }
+      }
+      return false;
+    case "golem":
+      if (m.cd >= 3 && dist <= 2) {
+        g.marks = [];
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const x = m.x + dx, y = m.y + dy;
+          if ((dx || dy) && inB(x, y) && !blocksMove(g.grid[idx(x, y)])) g.marks.push([x, y]);
+        }
+        m.charge = 1;
+        say(g, "The Forge Golem raises its fists high... get clear of the red!");
+        return true;
+      }
+      return false;
+    case "maw":
+      if (m.cd >= 4 && sees) {
+        g.marks = beamLine(g, m);
+        m.charge = 2;
+        say(g, "The Void Maw's eye locks onto you. Get off the red line!");
+        return true;
+      }
+      if (m.cd === 2 && dist >= 3 && dist <= 7 && sees) {
+        let pulled = 0;
+        for (let k = 0; k < 2; k++) {
+          const nx = g.p.x + Math.sign(m.x - g.p.x), ny = g.p.y + Math.sign(m.y - g.p.y);
+          const v = g.grid[idx(nx, ny)];
+          if (blocksMove(v) || v === LAVA || g.mons.some(o => o.x === nx && o.y === ny)) break;
+          g.p = { x: nx, y: ny };
+          pulled++;
+        }
+        if (pulled) {
+          say(g, "The Void Maw drags you toward it!");
+          enterTile(g, flash);
+          return true;
+        }
+      }
+      return false;
+  }
+  return false;
+}
+
+const shotName = (m: Mon) => m.kind === "lich" ? "bolt" : m.kind === "eye" ? "gaze" : "arrow";
+
 export function monsterTurn(g: Game, flash: Flash) {
   for (const m of [...g.mons]) {
     if (!g.mons.includes(m) || m.disguised) continue;
@@ -876,6 +967,11 @@ export function monsterTurn(g: Game, flash: Flash) {
     const dist = cheb(m, g.p);
     const canSee = m.phase || los(g.grid, m.x, m.y, g.p.x, g.p.y);
     const aware = m.alerted || (g.hidden <= 0 && dist <= g.sight + 2 && canSee);
+
+    if (m.boss && bossAct(g, m, aware, dist, flash)) {
+      if (g.dead) return;
+      continue;
+    }
 
     if (dist === 1 && (g.hidden <= 0 || m.alerted)) {
       const d = dmgRoll(g.rng, m.atk, m.pierce ? 0 : totalDef(g));
@@ -889,9 +985,9 @@ export function monsterTurn(g: Game, flash: Flash) {
 
     if (m.ranged && aware && dist >= 2 && dist <= 5 && los(g.grid, m.x, m.y, g.p.x, g.p.y)) {
       for (const pt of between(m.x, m.y, g.p.x, g.p.y)) flash(idx(pt.x, pt.y), "arrow");
-      if (g.rng.chance(0.25)) { say(g, "An arrow whistles past your ear."); continue; }
-      const d = dmgRoll(g.rng, m.atk, totalDef(g));
-      say(g, `The ${m.name}'s arrow hits you for ${d}.`);
+      if (g.rng.chance(0.25)) { say(g, `The ${m.name}'s ${shotName(m)} misses you.`); continue; }
+      const d = dmgRoll(g.rng, m.atk, m.pierce ? 0 : totalDef(g));
+      say(g, `The ${m.name}'s ${shotName(m)} hits you for ${d}.`);
       flash(idx(g.p.x, g.p.y), "hurt");
       hurtPlayer(g, d);
       if (g.dead) return;
@@ -901,7 +997,7 @@ export function monsterTurn(g: Game, flash: Flash) {
 
     const passable = (tx: number, ty: number) => m.phase
       ? tx > 0 && ty > 0 && tx < MW - 1 && ty < MH - 1
-      : inB(tx, ty) && g.grid[idx(tx, ty)] !== WALL && (g.grid[idx(tx, ty)] !== LAVA || m.fireproof);
+      : inB(tx, ty) && !blocksMove(g.grid[idx(tx, ty)]) && (g.grid[idx(tx, ty)] !== LAVA || m.fireproof);
     const free = (tx: number, ty: number) => passable(tx, ty) && !(tx === g.p.x && ty === g.p.y)
       && !g.mons.some(o => o !== m && o.x === tx && o.y === ty);
 
@@ -954,8 +1050,18 @@ export function endTurn(g: Game, flash: Flash) {
   if (!g.dead) burnHazards(g, flash);
   g.turns += 1;
   if (g.hidden > 0) { g.hidden -= 1; if (g.hidden === 0) say(g, "The shadow slips off you."); }
+  if (g.webbed > 0) { g.webbed -= 1; if (g.webbed === 0) say(g, "You tear free of the web."); }
   g.vis = computeFov(g);
+  noteSeen(g);
   if (!g.dead) spotTraps(g);
+}
+
+function noteSeen(g: Game) {
+  for (const m of g.mons) {
+    if (m.disguised || !g.vis.has(idx(m.x, m.y))) continue;
+    g.dex.seen[m.kind] = 1;
+    if (m.variant > 0) g.dex.seen[`${m.kind}:${m.variant}`] = 1;
+  }
 }
 
 function triggerTrap(g: Game, flash?: Flash) {
@@ -1035,6 +1141,7 @@ export function pickUp(g: Game) {
     g.potions[c] += 1; say(g, `You pocket a ${potionLabel(g, c)}.`);
   } else if (it.t === "relic" && it.relic && it.tier) {
     const cur = g.relics[it.relic] ?? 0;
+    g.dex.relics[it.relic] = Math.max(g.dex.relics[it.relic] ?? 0, it.tier);
     if (it.tier > cur) {
       g.relics[it.relic] = it.tier;
       say(g, cur
@@ -1135,7 +1242,7 @@ export function castWaystone(g: Game, flash?: Flash) {
   if (g.inv.waystone <= 0) return;
   g.inv.waystone -= 1;
   const spots: number[] = [];
-  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && g.grid[i] !== WALL && g.grid[i] !== LAVA) spots.push(i);
+  for (let i = 0; i < MW * MH; i++) if (g.seen[i] && !blocksMove(g.grid[i]) && g.grid[i] !== LAVA) spots.push(i);
   const far = spots.filter(i => {
     const dx = i % MW - g.p.x, dy = ((i / MW) | 0) - g.p.y;
     return dx * dx + dy * dy > 49 && !g.mons.some(m => idx(m.x, m.y) === i);
@@ -1168,7 +1275,8 @@ function doStep(g: Game, k: number, flash: Flash): boolean {
   const m = g.mons.find(o => o.x === tx && o.y === ty);
   if (m?.disguised) { revealMimic(g, m); return true; }
   if (m) { playerAttack(g, m, flash); return true; }
-  if (g.grid[idx(tx, ty)] === WALL) return false;
+  if (blocksMove(g.grid[idx(tx, ty)])) return false;
+  if (g.webbed > 0) { say(g, "You struggle against the web."); return true; }
   g.p = { x: tx, y: ty };
   enterTile(g, flash);
   return true;
@@ -1178,7 +1286,7 @@ function doReach(g: Game, dx: number, dy: number, flash: Flash): boolean {
   const m = g.mons.find(o => o.x === g.p.x + dx && o.y === g.p.y + dy);
   if (!m || !canReach(g, m)) return false;
   if (m.disguised) { revealMimic(g, m); return true; }
-  playerAttack(g, m, flash);
+  playerAttack(g, m, flash, true);
   return true;
 }
 
@@ -1225,8 +1333,8 @@ function unrle(s: string) {
   return out;
 }
 
-/* kind, x, y, hp, tick, then (v2+) variant, weapon, armor, split gen, flags */
-type SavedMon = [string, number, number, number, number, number?, number?, number?, number?, number?];
+/* kind, x, y, hp, tick, then (v2+) variant, weapon, armor, split gen, flags, (v4+) boss cooldown, boss charge */
+type SavedMon = [string, number, number, number, number, number?, number?, number?, number?, number?, number?, number?];
 /* type, x, y, number (atk/def/amount/color/tier/locked), name (relic id for relics), chest seed */
 type SavedItem = [ItemType, number, number, number, string, number?];
 
@@ -1247,6 +1355,8 @@ export type SavedRun = {
   st?: StartStats; sa?: number; rk?: number; ac?: string; rp?: number;
   rl?: Partial<Record<RelicId, number>>; hz?: [number, number, number, number][]; ks?: number; pr?: number;
   cc?: [number, number];
+  // v4: bosses and the bestiary
+  wb?: number; mk?: [number, number][]; dx?: Dex;
 };
 
 const itemNum = (i: Item) =>
@@ -1257,12 +1367,12 @@ const itemNum = (i: Item) =>
 
 export function serializeRun(g: Game): SavedRun {
   return {
-    ver: 3,
+    ver: 4,
     d: g.depth,
     G: rle(Array.from(g.grid).join("")),
     S: rle(Array.from(g.seen).join("")),
     m: g.mons.map(m => [m.kind, m.x, m.y, m.hp, m.tick || 0, m.variant, m.wpn, m.arm, m.gen,
-                        (m.alerted ? 1 : 0) | (m.disguised ? 2 : 0)]),
+                        (m.alerted ? 1 : 0) | (m.disguised ? 2 : 0), m.cd, m.charge]),
     i: g.items.map(i => {
       const row: SavedItem = [i.t, i.x, i.y, itemNum(i), i.t === "relic" ? i.relic! : i.name];
       if (i.seed !== undefined) row.push(i.seed);
@@ -1282,6 +1392,7 @@ export function serializeRun(g: Game): SavedRun {
     st: g.start, sa: g.startedAt, rk: g.ranked ? 1 : 0, ac: g.actions.join(","), rp: g.replayable ? 1 : 0,
     rl: { ...g.relics }, hz: g.hazards.map(h => [h.x, h.y, h.dmg, h.turns]), ks: g.killsSinceEmber, pr: g.perils,
     cc: [g.wardens, g.chests],
+    wb: g.webbed, mk: g.marks.map(([x, y]) => [x, y]), dx: g.dex,
   };
 }
 
@@ -1303,10 +1414,10 @@ export function deserializeRun(o: SavedRun): Game {
     grid: Uint8Array.from(unrle(o.G).split("").map(Number)),
     seen: Uint8Array.from(unrle(o.S).split("").map(Number)),
     vis: new Set(),
-    mons: o.m.flatMap(([k, x, y, hp, tick, variant, wpn, arm, gen, flags]) => {
+    mons: o.m.flatMap(([k, x, y, hp, tick, variant, wpn, arm, gen, flags, cd, charge]) => {
       const b = makeMon(k, mDepth, variant ?? 0, wpn ?? -1, arm ?? -1, gen ?? 0);
       if (!b) return [];
-      return [{ ...b, x, y, hp, tick,
+      return [{ ...b, x, y, hp, tick, cd: cd ?? 0, charge: charge ?? 0,
                 alerted: !!((flags ?? 0) & 1), disguised: !!((flags ?? 0) & 2) }];
     }),
     items: o.i.map(([t, x, y, n, name, seed]) => {
@@ -1334,6 +1445,8 @@ export function deserializeRun(o: SavedRun): Game {
     killsSinceEmber: o.ks ?? 0,
     perils: o.pr ?? 0,
     wardens: o.cc?.[0] ?? 0, chests: o.cc?.[1] ?? 0,
+    webbed: o.wb ?? 0, marks: (o.mk ?? []).map(([x, y]) => [x, y] as [number, number]),
+    dex: o.dx ? { seen: { ...o.dx.seen }, kills: { ...o.dx.kills }, relics: { ...o.dx.relics } } : freshDex(),
     level: o.x[0], xp: o.x[1], next: o.x[2],
     echoes: o.e[0], greed: o.e[1], kills: o.e[2], turns: o.e[3],
     log: o.l?.length ? o.l : ["You come back to yourself in the dark."],

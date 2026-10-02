@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Map Preview</title>
+  <style>
+    body { background:#080A0E; color:#E6DCC9; font:13px ui-sans-serif, system-ui, sans-serif; margin:14px; }
+    h2 { font-size:13px; color:#7C8794; margin:16px 0 6px; }
+    .row { display:flex; flex-wrap:wrap; gap:10px; }
+    figure { margin:0; } canvas { image-rendering:pixelated; display:block; }
+    figcaption { font-size:11px; color:#7C8794; margin-top:3px; }
+  </style>
+</head>
+<body>
+  <p>Dev-only page: whole floors as the generator makes them, per zone (served by <code>npm run dev</code> at <code>/tools/maps.html</code>). Reload for new seeds.</p>
+  <div id="out"></div>
+  <script type="module">
+    import { newRun, descend, startStats, freshMeta, MW, MH, WALL, FLOOR, STAIRS, STAIRS_RISK, WATER, LAVA, CHASM } from "/src/game/core.ts";
+    import { ZONES, zoneOf, ZONE_LEN } from "/src/game/zones.ts";
+    const out = document.getElementById("out");
+    const S = 7;
+    const seed = Math.floor(Math.random() * 1e9);
+    function draw(g) {
+      const cv = document.createElement("canvas"); cv.width = MW * S; cv.height = MH * S;
+      const cx = cv.getContext("2d"); const z = zoneOf(g.depth).colors;
+      for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+        const v = g.grid[y * MW + x];
+        cx.fillStyle = v === WALL ? z.litWall : v === WATER ? "#1E4A5A" : v === LAVA ? "#C8461E" : v === CHASM ? "#020205"
+          : v === STAIRS ? "#E9A13B" : v === STAIRS_RISK ? "#C04A3B" : z.litFloor;
+        cx.fillRect(x * S, y * S, S, S);
+      }
+      for (const m of g.mons) { cx.fillStyle = m.boss ? "#FF3DF0" : "#E6DCC9"; cx.fillRect(m.x * S + 2, m.y * S + 2, S - 4, S - 4); }
+      cx.fillStyle = "#6FC4C8"; cx.fillRect(g.p.x * S + 1, g.p.y * S + 1, S - 2, S - 2);
+      return cv;
+    }
+    ZONES.forEach((zone, zi) => {
+      const h = document.createElement("h2"); h.textContent = `${zone.name} (floors ${zi * ZONE_LEN + 1}–${zi * ZONE_LEN + ZONE_LEN})`; out.append(h);
+      const row = document.createElement("div"); row.className = "row"; out.append(row);
+      for (let k = 0; k < 5; k++) {
+        const depth = zi * ZONE_LEN + 1 + k;
+        const g = newRun({ mode: "free", seed: seed + k * 7 + zi, day: null, start: startStats(freshMeta(), "wanderer"), ranked: false, startedAt: 1 });
+        while (g.depth < depth) descend(g, "s");
+        const f = document.createElement("figure"); f.append(draw(g));
+        const c = document.createElement("figcaption");
+        c.textContent = `floor ${depth}${g.mons.some(m => m.boss) ? " · boss: " + g.mons.find(m => m.boss).name : ""}`;
+        f.append(c); row.append(f);
+      }
+    });
+  </script>
+</body>
+</html>

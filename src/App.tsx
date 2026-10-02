@@ -1,13 +1,12 @@
 import { useEffect, useRef, useReducer, useState, useCallback, useMemo, type MouseEvent } from "react";
 import {
-  C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, WEAPONS, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
-  newRun, startStats, freshMeta, dailySeed, dailyClass, applyAction, stepAction, canReach, bfsPath, potionLabel,
-  relicLabel, relicBlurb, scoreOf,
+  C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, WEAPONS, POTION_COLORS, POTION_EFFECTS, RULES_VERSION,
+  idx, inB, say, totalAtk, totalDef, newRun, startStats, freshMeta, dailySeed, dailyClass, applyAction, stepAction,
+  canReach, reachOf, bfsPath, potionLabel, relicLabel, relicBlurb, scoreOf, mergeDex,
   type Game, type Meta, type Upgrade, type Flash, type RunMode,
 } from "./game/core";
-import { drawMap, playerSprite, potionSprite, relicSprite, monSprite, type GhostMark } from "./game/sprites";
-import { ZONES, ZONE_LEN, zoneOf, zoneIndex, zoneStart } from "./game/zones";
-import type { Mon } from "./game/core";
+import { drawMap, playerSprite, potionSprite, relicSprite, spriteCanvas, type GhostMark } from "./game/sprites";
+import { zoneOf, zoneIndex } from "./game/zones";
 import {
   loadMeta, saveMeta, loadRun, saveRun, clearRun, loadActive, requestPersist, isStandalone, isIOS,
   exportCode, importCode, loadProfile, saveProfile, loadRecords, addRecord, loadFriends, addFriendRun, removeFriendRun,
@@ -16,12 +15,14 @@ import {
   makeRecord, buildGhost, ghostAt, encodeRecord, decodeRecord, todayUTC, prettyDay,
   type Ghost, type Profile, type RunRecord,
 } from "./game/replay";
-import { RULES_VERSION } from "./game/core";
 import { randomSeed } from "./game/rng";
-import { RELICS, TIER_NAMES, type RelicId } from "./game/relics";
+import { TIER_NAMES, type RelicId } from "./game/relics";
 import { CLASSES, CLASS_IDS, isUnlocked, classOf, type ClassId } from "./game/classes";
+import { ACHIEVEMENTS, combinedDex, newlyEarned } from "./game/bestiary";
 import { Shell, SpriteIcon, ActBtn, linkBtn, btn, act3, textArea, sectionTitle, Stat, Row } from "./ui/bits";
 import { DailyCard } from "./ui/Daily";
+import { Collection } from "./ui/Collection";
+import { PauseMenu } from "./ui/PauseMenu";
 
 /* a run's id is derived from its seed and start time, so an in-progress share
    and the finished run share an id and the newer one replaces the older */
@@ -119,39 +120,6 @@ function HeroPicker({ meta, onPick }: { meta: Meta; onPick: (id: ClassId) => voi
   );
 }
 
-/* ============================ zone guide ============================ */
-
-const wardenIcon = (zone: number) =>
-  monSprite({ kind: "warden", variant: zone + 1, wpn: -1, arm: -1, disguised: false } as Mon);
-
-function ZoneGuide({ best }: { best: number }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-      {ZONES.map((z, i) => {
-        const found = i === 0 || best >= zoneStart(i);
-        const from = zoneStart(i), to = i === ZONES.length - 1 ? "…" : String(from + ZONE_LEN - 1);
-        const kinds = [...new Set(z.pool.map(([k]) => k))];
-        return (
-          <div key={z.name} style={{ borderLeft: `3px solid ${found ? z.colors.wallTop : C.memWall}`, padding: "2px 0 2px 10px" }}>
-            <div style={{ fontSize: 14.5, fontWeight: 600, color: found ? C.bone : C.memGlyph }}>
-              {found ? z.name : "???"} <span style={{ fontWeight: 400, fontSize: 12, color: C.dim }}>· floors {from}–{to}</span>
-            </div>
-            {found ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
-                {kinds.map(k => <SpriteIcon key={k} name={k} size={20} />)}
-                <span style={{ color: C.memGlyph, margin: "0 2px" }}>·</span>
-                <SpriteIcon src={wardenIcon(i)} size={22} />
-              </div>
-            ) : (
-              <div style={{ fontSize: 12.5, color: C.memGlyph, marginTop: 3 }}>Reach floor {from} to discover what lives here.</div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 /* ============================ backup panel ============================ */
 
 function Backup({ onRestored }: { onRestored: () => void }) {
@@ -202,12 +170,55 @@ function Backup({ onRestored }: { onRestored: () => void }) {
   );
 }
 
+/* ============================ upgrades ============================ */
+
+function Upgrades({ meta, onBuy }: { meta: Meta; onBuy: (u: Upgrade) => void }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
+        <span className="lb-mono" style={{ fontSize: 28, color: C.verd }}>{meta.echoes}</span>
+        <span style={{ color: C.dim }}>echoes to spend</span>
+      </div>
+      <p style={{ margin: "0 0 12px", fontSize: 13, color: C.dim, lineHeight: 1.45 }}>
+        Upgrades make every hero stronger in your own descents. Daily dungeons always start without them, so the scoreboard stays fair.
+      </p>
+      {UPGRADES.map(u => {
+        const lvl = meta.up[u.k] || 0;
+        const maxed = lvl >= u.max;
+        const cost = maxed ? 0 : u.costs[lvl];
+        const afford = !maxed && meta.echoes >= cost;
+        return (
+          <button key={u.k} className="lb-btn" disabled={maxed || !afford} onClick={() => onBuy(u)}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 2px",
+              background: "none", border: "none", borderBottom: `1px solid ${C.memWall}`,
+              color: "inherit", textAlign: "left", cursor: maxed || !afford ? "default" : "pointer",
+              opacity: maxed ? 0.5 : afford ? 1 : 0.65, font: "inherit",
+            }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 16.5, fontWeight: 600 }}>{u.name} <span className="lb-mono" style={{ fontSize: 12, color: C.dim, fontWeight: 400 }}>lvl {lvl}/{u.max}</span></div>
+              <div style={{ fontSize: 13, color: C.dim }}>{u.blurb} per level</div>
+              <div style={{ height: 3, background: C.memWall, borderRadius: 2, marginTop: 6, overflow: "hidden" }}>
+                <div style={{ width: `${(lvl / u.max) * 100}%`, height: "100%", background: C.ember }} />
+              </div>
+            </div>
+            <div className="lb-mono" style={{ width: 56, textAlign: "right", fontSize: 14, color: maxed ? C.dim : afford ? C.verd : C.memGlyph }}>
+              {maxed ? "max" : cost}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ============================ component ============================ */
 
 type SaveState = "idle" | "saved" | "failed";
+type Tab = "play" | "upgrades" | "collection" | "more";
 type Summary = {
   mode: RunMode; day: string | null; depth: number; kills: number; earned: number; level: number;
-  score: number; record: boolean; ranked: boolean; abandoned: boolean; unlocked: ClassId[];
+  score: number; record: boolean; ranked: boolean; abandoned: boolean; unlocked: ClassId[]; feats: string[];
 };
 
 export default function LampblackDepths() {
@@ -215,6 +226,7 @@ export default function LampblackDepths() {
   const G = useRef<Game | null>(null);  // the run on screen
   const [, force] = useReducer((x: number) => x + 1, 0);
   const [screen, setScreen] = useState<"loading" | "hub" | "game" | "death">("loading");
+  const [tab, setTab] = useState<Tab>("play");
   const [meta, setMetaState] = useState<Meta>(loadMeta);
   const metaRef = useRef(meta);
   const setMeta = (m: Meta) => { metaRef.current = m; setMetaState(m); saveMeta(m); };
@@ -228,6 +240,7 @@ export default function LampblackDepths() {
   const [installed] = useState(isStandalone);
   const [tray, setTray] = useState(false);
   const [relicsOpen, setRelicsOpen] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [zoneCard, setZoneCard] = useState<{ name: string; intro: string; depth: number } | null>(null);
   const lastZone = useRef("");
@@ -281,7 +294,10 @@ export default function LampblackDepths() {
   /* boot: resume straight into whichever run was last on screen */
   const loadAll = useCallback((resume: boolean) => {
     stopWalk();
-    setMeta(loadMeta());
+    const m = loadMeta();
+    // players from before achievements existed get credit for what they've already done
+    const earned = newlyEarned(m);
+    setMeta(earned.length ? { ...m, ach: [...m.ach, ...earned] } : m);
     setProfileState(loadProfile());
     setRecords(loadRecords());
     setFriends(loadFriends());
@@ -336,6 +352,10 @@ export default function LampblackDepths() {
     });
   };
 
+  /* monsters a reach attack can hit right now get amber brackets */
+  const targetsOf = (g: Game) =>
+    reachOf(g) > 1 ? new Set(g.mons.filter(m => !m.disguised && canReach(g, m)).map(m => idx(m.x, m.y))) : new Set<number>();
+
   useEffect(() => {
     const cv = canvasRef.current, g = G.current;
     if (!cv || !g || screen !== "game") return;
@@ -346,8 +366,16 @@ export default function LampblackDepths() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const camX = Math.max(0, Math.min(MW - VW, g.p.x - (VW >> 1)));
     const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
-    drawMap(ctx, g, ts, camX, camY, flashes, ghostMarks(g));
+    drawMap(ctx, g, ts, camX, camY, flashes, ghostMarks(g), targetsOf(g), Date.now());
   });
+
+  /* red danger tiles pulse while a boss attack is coming */
+  const hasMarks = screen === "game" && !!G.current?.marks.length;
+  useEffect(() => {
+    if (!hasMarks) return;
+    const t = window.setInterval(force, 120);
+    return () => clearInterval(t);
+  }, [hasMarks]);
 
   /* ---------------- turns ---------------- */
 
@@ -362,20 +390,25 @@ export default function LampblackDepths() {
   const finishRun = useCallback((g: Game, abandoned = false) => {
     const m = metaRef.current;
     const earned = Math.round(g.echoes * g.greed);
-    const nm: Meta = {
+    let nm: Meta = {
       ...m, echoes: m.echoes + earned, best: Math.max(m.best, g.depth),
       runs: m.runs + 1, kills: m.kills + g.kills, wardens: m.wardens + g.wardens, chests: m.chests + g.chests,
+      dex: mergeDex(m.dex, g.dex), maxPerils: Math.max(m.maxPerils, g.perils),
+      dailies: m.dailies + (g.mode === "daily" ? 1 : 0), maxEarned: Math.max(m.maxEarned, earned),
     };
     const unlocked = CLASS_IDS.filter(id => !isUnlocked(id, m) && isUnlocked(id, nm));
+    const feats = newlyEarned(nm);
+    nm = { ...nm, ach: [...nm.ach, ...feats] };
     setMeta(nm);
     if (g.replayable) setRecords(addRecord(makeRecord(g, runId(g), loadProfile(), __APP_VERSION__, true)));
     setSummary({
       mode: g.mode, day: g.day, depth: g.depth, kills: g.kills, earned, level: g.level,
-      score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned, unlocked,
+      score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned, unlocked, feats,
     });
     clearRun(g.mode);
     runs.current[g.mode] = null;
     if (G.current === g) G.current = null;
+    setPaused(false);
     setScreen("death");
   }, []);
 
@@ -418,17 +451,39 @@ export default function LampblackDepths() {
     const d = Math.max(Math.abs(dx), Math.abs(dy));
     if (d === 0) { doAction("w"); return; }
     if (d === 1) { doAction(stepAction(dx, dy)); return; }
-    // Reaching Gauntlet: strike a monster that's a few tiles away
-    const m = g.mons.find(o => o.x === tx && o.y === ty && g.vis.has(idx(tx, ty)));
+    // a monster a few tiles away: shoot it if it's in reach
+    const m = g.mons.find(o => o.x === tx && o.y === ty && !o.disguised && g.vis.has(idx(tx, ty)));
     if (m && canReach(g, m)) { doAction(`a${dx}.${dy}`); return; }
-    if (enemyInSight(g)) { say(g, "Not with something watching you."); force(); return; }
+    if (m && reachOf(g) > 1) {
+      say(g, d > reachOf(g) ? `Too far: you can reach ${reachOf(g)} tiles. Step closer.` : "No clear shot from here.");
+      force();
+      return;
+    }
     const path = bfsPath(g, tx, ty);
     if (!path) return;
+    // with something watching you, take one careful step instead of walking the whole way
+    if (enemyInSight(g)) { doAction(stepAction(path[0].x - g.p.x, path[0].y - g.p.y)); return; }
     g.path = path;
     stepWalk();
   }, [ts, doAction, stepWalk, stopWalk]);
 
   const onPotion = (c: number) => { setTray(false); doAction(`p${c}`); };
+
+  /* ---------------- zone title cards ---------------- */
+
+  useEffect(() => {
+    const g = G.current;
+    if (screen !== "game" || !g) return;
+    const key = `${runId(g)}:${zoneIndex(g.depth)}`;
+    if (lastZone.current === key) return;
+    lastZone.current = key;
+    const z = zoneOf(g.depth);
+    setZoneCard({ name: z.name, intro: z.intro, depth: g.depth });
+    clearTimeout(zoneTimer.current);
+    zoneTimer.current = window.setTimeout(() => setZoneCard(null), 2600);
+  });
+
+  useEffect(() => () => { clearTimeout(walkTimer.current); clearTimeout(zoneTimer.current); }, []);
 
   /* ---------------- starting & leaving runs ---------------- */
 
@@ -438,6 +493,7 @@ export default function LampblackDepths() {
     runs.current[g.mode] = g;
     setTray(false);
     setRelicsOpen(false);
+    setPaused(false);
     persistRun();
     setScreen("game");
   };
@@ -456,6 +512,7 @@ export default function LampblackDepths() {
     const day = todayUTC();
     const ranked = !records.some(r => r.mode === "daily" && r.day === day);
     enter(newRun({
+      // dailies always use a fresh profile: no echo upgrades, today's hero
       mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta(), dailyClass(day)), ranked, startedAt: Date.now(),
     }));
   };
@@ -470,6 +527,7 @@ export default function LampblackDepths() {
   const leaveToHub = () => {
     stopWalk();
     persistRun();
+    setPaused(false);
     setScreen("hub");
   };
 
@@ -516,26 +574,12 @@ export default function LampblackDepths() {
   };
 
   const wipe = () => {
-    if (!confirm("Erase ALL progress? Echoes, upgrades and the current run will be gone for good.")) return;
+    if (!confirm("Erase ALL progress? Echoes, upgrades, the bestiary and the current run will be gone for good.")) return;
     setMeta(freshMeta());
     G.current = null;
     runs.current.free = null;
     clearRun("free");
   };
-
-  useEffect(() => {
-    const g = G.current;
-    if (screen !== "game" || !g) return;
-    const key = `${runId(g)}:${zoneIndex(g.depth)}`;
-    if (lastZone.current === key) return;
-    lastZone.current = key;
-    const z = zoneOf(g.depth);
-    setZoneCard({ name: z.name, intro: z.intro, depth: g.depth });
-    clearTimeout(zoneTimer.current);
-    zoneTimer.current = window.setTimeout(() => setZoneCard(null), 2600);
-  });
-
-  useEffect(() => () => { clearTimeout(walkTimer.current); clearTimeout(zoneTimer.current); }, []);
 
   /* ---------------- screens ---------------- */
 
@@ -545,117 +589,95 @@ export default function LampblackDepths() {
 
   if (screen === "hub") {
     const free = runs.current.free;
+    const dex = combinedDex(meta, runs.current.free?.dex, runs.current.daily?.dex);
+    const tabs: [Tab, string][] = [["play", "Play"], ["upgrades", "Upgrades"], ["collection", "Collection"], ["more", "More"]];
     return (
       <Shell>
-        <div style={{ flex: 1, overflowY: "auto", padding: "26px 20px 24px", maxWidth: 520, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+        <div style={{ padding: "14px 20px 0", maxWidth: 560, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <SpriteIcon name={classOf(meta.cls).sprite} size={28} />
-            <h1 style={{ margin: 0, fontSize: 29, fontWeight: 600, letterSpacing: "-0.01em" }}>The Lampblack Depths</h1>
+            <SpriteIcon name={classOf(meta.cls).sprite} size={26} />
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", flex: 1 }}>The Lampblack Depths</h1>
+            <span className="lb-mono" style={{ color: C.verd, fontSize: 14 }}>{meta.echoes}</span>
           </div>
-          <p style={{ color: C.dim, marginTop: 8, marginBottom: 20, fontSize: 15, lineHeight: 1.5, maxWidth: "46ch" }}>
-            You go down, you die, you come back with what the dark gave you. Echoes are the only thing that survives a death.
-          </p>
+          <nav style={{ display: "flex", marginTop: 12, borderBottom: `1px solid ${C.memWall}` }}>
+            {tabs.map(([k, label]) => (
+              <button key={k} className="lb-btn" onClick={() => setTab(k)} aria-pressed={tab === k}
+                style={{ flex: 1, font: "inherit", fontSize: 14.5, fontWeight: 600, padding: "9px 4px", background: "none", cursor: "pointer",
+                         border: "none", borderBottom: `2px solid ${tab === k ? C.ember : "transparent"}`, color: tab === k ? C.bone : C.dim }}>
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
 
-          {!installed && isIOS() && (
-            <div style={{ background: "#1F1810", border: `1px solid ${C.litWall}`, borderRadius: 3, padding: "10px 12px", marginBottom: 18, fontSize: 14, lineHeight: 1.45 }}>
-              <b style={{ color: C.ember }}>Install it first.</b> Tap the Share button, then <b>Add to Home Screen</b>.
-              Open the game from that icon and your saves are kept for good.
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px 24px", maxWidth: 560, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+          {tab === "play" && (<>
+            {!installed && isIOS() && (
+              <div style={{ background: "#1F1810", border: `1px solid ${C.litWall}`, borderRadius: 3, padding: "10px 12px", marginBottom: 18, fontSize: 14, lineHeight: 1.45 }}>
+                <b style={{ color: C.ember }}>Install it first.</b> Tap the Share button, then <b>Add to Home Screen</b>.
+                Open the game from that icon and your saves are kept for good.
+              </div>
+            )}
+
+            <DailyCard
+              day={today} now={now}
+              live={runs.current.daily}
+              mine={records.filter(r => r.mode === "daily" && r.day === today)}
+              ghosts={todaysGhosts}
+              name={profile.name}
+              onName={setName}
+              onPlay={playDaily}
+              onGiveUp={giveUpDaily}
+              onShare={shareDaily}
+              onAdd={addFriend}
+              onRemoveFriend={id => setFriends(removeFriendRun(id))}
+            />
+
+            <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Your own descent</h2>
+            <div style={{ display: "flex", gap: 22, padding: "10px 0 12px", borderBottom: `1px solid ${C.memWall}`, marginBottom: 14 }}>
+              <Stat label="deepest" value={meta.best || "—"} color={C.ember} />
+              <Stat label="descents" value={meta.runs} />
+              <Stat label="kills" value={meta.kills} />
+              <Stat label="feats" value={`${meta.ach.length}/${ACHIEVEMENTS.length}`} />
+            </div>
+
+            <h3 style={{ ...sectionTitle, margin: "0 0 8px" }}>Hero</h3>
+            <HeroPicker meta={meta} onPick={cls => setMeta({ ...metaRef.current, cls })} />
+
+            <div style={{ display: "flex", gap: 10, margin: "4px 0 10px" }}>
+              {free && (
+                <button className="lb-btn" onClick={() => enter(free)} style={btn(C.ember, true)}>
+                  Return to floor {free.depth}
+                </button>
+              )}
+              <button className="lb-btn" onClick={startFree} style={btn(free ? C.dim : C.ember, !free)}>
+                {free ? "Abandon and start over" : "Descend"}
+              </button>
+            </div>
+          </>)}
+
+          {tab === "upgrades" && <Upgrades meta={meta} onBuy={buy} />}
+
+          {tab === "collection" && <Collection meta={meta} dex={dex} />}
+
+          {tab === "more" && (
+            <div style={{ fontSize: 14, color: C.dim, lineHeight: 1.6 }}>
+              <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>How to play</h2>
+              <ul style={{ margin: "0 0 16px", paddingLeft: 18 }}>
+                <li>Tap a tile next to you to move or attack. Tap your hero to wait a turn.</li>
+                <li>Tap a far tile to walk there. If something is watching, you take one careful step at a time.</li>
+                <li>Heroes with reach (the Ranger, or the Reaching Gauntlet) can tap a monster with amber corners to hit it from afar.</li>
+                <li>Tap your hero's picture in the top bar to pause and see your gear, pack and relics.</li>
+                <li>Every floor has two ways down. The red stair is perilous: tougher monsters, more treasure and bonus points.</li>
+                <li>Every 5th floor a boss guards the stairs. When the floor glows red, get off those tiles!</li>
+                <li>Progress saves after every move. You can close the app and come back.</li>
+              </ul>
+              <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Your save</h2>
+              <Backup onRestored={() => loadAll(false)} />
+              <div><button onClick={wipe} style={linkBtn}>Erase all progress</button></div>
+              <p className="lb-mono" style={{ margin: "14px 0 0", fontSize: 11, color: C.memGlyph }}>v{__APP_VERSION__} · rules {RULES_VERSION}</p>
             </div>
           )}
-
-          <DailyCard
-            day={today} now={now}
-            live={runs.current.daily}
-            mine={records.filter(r => r.mode === "daily" && r.day === today)}
-            ghosts={todaysGhosts}
-            name={profile.name}
-            onName={setName}
-            onPlay={playDaily}
-            onGiveUp={giveUpDaily}
-            onShare={shareDaily}
-            onAdd={addFriend}
-            onRemoveFriend={id => setFriends(removeFriendRun(id))}
-          />
-
-          <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Your own descent</h2>
-          <div style={{ display: "flex", gap: 22, padding: "14px 0", borderTop: `1px solid ${C.memWall}`, borderBottom: `1px solid ${C.memWall}` }}>
-            <Stat label="echoes" value={meta.echoes} color={C.verd} />
-            <Stat label="deepest" value={meta.best || "—"} color={C.ember} />
-            <Stat label="descents" value={meta.runs} />
-            <Stat label="kills" value={meta.kills} />
-          </div>
-
-          <h3 style={{ ...sectionTitle, margin: "16px 0 8px" }}>Hero for your next descent</h3>
-          <HeroPicker meta={meta} onPick={cls => setMeta({ ...metaRef.current, cls })} />
-
-          <div style={{ display: "flex", gap: 10, margin: "4px 0 26px" }}>
-            {free && (
-              <button className="lb-btn" onClick={() => enter(free)} style={btn(C.ember, true)}>
-                Return to depth {free.depth}
-              </button>
-            )}
-            <button className="lb-btn" onClick={startFree} style={btn(free ? C.dim : C.ember, !free)}>
-              {free ? "Abandon and start over" : "Descend"}
-            </button>
-          </div>
-
-          <h2 style={sectionTitle}>Spend echoes <span style={{ fontWeight: 400 }}>(not used in the daily)</span></h2>
-          <div>
-            {UPGRADES.map(u => {
-              const lvl = meta.up[u.k] || 0;
-              const maxed = lvl >= u.max;
-              const cost = maxed ? 0 : u.costs[lvl];
-              const afford = !maxed && meta.echoes >= cost;
-              return (
-                <button key={u.k} className="lb-btn" disabled={maxed || !afford} onClick={() => buy(u)}
-                  style={{
-                    width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "13px 2px",
-                    background: "none", border: "none", borderBottom: `1px solid ${C.memWall}`,
-                    color: "inherit", textAlign: "left", cursor: maxed || !afford ? "default" : "pointer",
-                    opacity: maxed ? 0.45 : afford ? 1 : 0.6, font: "inherit",
-                  }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 17, fontWeight: 600 }}>{u.name}</div>
-                    <div style={{ fontSize: 13.5, color: C.dim }}>{u.blurb}</div>
-                  </div>
-                  <div className="lb-mono" style={{ color: C.ember, fontSize: 13, letterSpacing: 2 }}>
-                    {"◆".repeat(lvl)}<span style={{ color: C.memGlyph }}>{"◇".repeat(u.max - lvl)}</span>
-                  </div>
-                  <div className="lb-mono" style={{ width: 52, textAlign: "right", fontSize: 14, color: maxed ? C.dim : afford ? C.verd : C.memGlyph }}>
-                    {maxed ? "full" : cost}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          <h2 style={{ ...sectionTitle, margin: "22px 0 8px" }}>The depths</h2>
-          <ZoneGuide best={meta.best} />
-
-          <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Relics you might find</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 14px", marginBottom: 20 }}>
-            {(Object.keys(RELICS) as RelicId[]).map(id => (
-              <div key={id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.dim }}>
-                <SpriteIcon src={relicSprite(id, 1)} size={18} /> {RELICS[id].name}
-              </div>
-            ))}
-          </div>
-
-          <div style={{ fontSize: 13, color: C.memGlyph, lineHeight: 1.6 }}>
-            <p style={{ margin: "0 0 8px" }}>
-              Tap a tile next to you to move or strike. Tap a far tile to walk there. You stop the moment
-              something comes into the light.
-            </p>
-            <p style={{ margin: "0 0 8px" }}>
-              Every floor has two ways down. The red stair is perilous: tougher monsters, but more treasure, more relics and bonus points.
-            </p>
-            <p style={{ margin: "0 0 10px" }}>Progress saves after every move. You can close this and come back to the run.</p>
-            <Backup onRestored={() => loadAll(false)} />
-            <div>
-              <button onClick={wipe} style={linkBtn}>Erase all progress</button>
-            </div>
-            <p className="lb-mono" style={{ margin: "14px 0 0", fontSize: 11 }}>v{__APP_VERSION__} · rules {RULES_VERSION}</p>
-          </div>
         </div>
       </Shell>
     );
@@ -665,7 +687,7 @@ export default function LampblackDepths() {
     const daily = summary.mode === "daily";
     return (
       <Shell>
-        <div style={{ margin: "auto", padding: 26, maxWidth: 420, width: "100%", boxSizing: "border-box" }}>
+        <div style={{ margin: "auto", padding: 26, maxWidth: 420, width: "100%", boxSizing: "border-box", overflowY: "auto" }}>
           <div className="lb-mono" style={{ color: summary.abandoned ? C.dim : C.blood, fontSize: 40, lineHeight: 1 }}>{summary.abandoned ? "·" : "†"}</div>
           <h2 style={{ fontSize: 27, fontWeight: 600, margin: "12px 0 2px" }}>{summary.abandoned ? "You climb back out" : "The lamp goes out"}</h2>
           <p style={{ color: C.dim, margin: "0 0 22px", fontSize: 15 }}>
@@ -674,7 +696,7 @@ export default function LampblackDepths() {
               : summary.record ? "Deeper than you have ever been." : "The dark keeps what it takes."}
           </p>
           <Row k="score" v={summary.score} color={C.ember} />
-          <Row k="reached" v={`depth ${summary.depth}`} />
+          <Row k="reached" v={`floor ${summary.depth}`} />
           <Row k="killed" v={summary.kills} />
           <Row k="level" v={summary.level} />
           <Row k="echoes carried out" v={summary.earned} color={C.verd} />
@@ -686,11 +708,21 @@ export default function LampblackDepths() {
                 <span style={{ display: "block", fontSize: 13, color: C.dim }}>{CLASSES[id].blurb}</span></span>
             </div>
           ))}
+          {summary.feats.map(id => {
+            const a = ACHIEVEMENTS.find(x => x.id === id)!;
+            return (
+              <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, padding: "8px 12px",
+                                     border: `1px solid ${C.litWall}`, borderRadius: 4 }}>
+                <span style={{ width: 26, height: 26, borderRadius: 13, background: C.ember, color: "#0A0C10", display: "flex", alignItems: "center", justifyContent: "center" }}>★</span>
+                <span><b>{a.name}</b><span style={{ display: "block", fontSize: 12.5, color: C.dim }}>{a.text}</span></span>
+              </div>
+            );
+          })}
           <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
             {daily
-              ? <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.ember, true)}>See the scoreboard</button>
+              ? <button className="lb-btn" onClick={() => { setTab("play"); setScreen("hub"); }} style={btn(C.ember, true)}>See the scoreboard</button>
               : <button className="lb-btn" onClick={startFree} style={btn(C.ember, true)}>Descend again</button>}
-            <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.dim, false)}>{daily ? "Main screen" : "Spend echoes"}</button>
+            <button className="lb-btn" onClick={() => { setTab(daily ? "play" : "upgrades"); setScreen("hub"); }} style={btn(C.dim, false)}>{daily ? "Main screen" : "Spend echoes"}</button>
           </div>
         </div>
       </Shell>
@@ -714,6 +746,7 @@ export default function LampblackDepths() {
   const hpPct = Math.max(0, g.hp / g.maxHp);
   const saveColor = saveState === "failed" ? C.blood : saveState === "saved" ? C.verd : C.memGlyph;
   const potionCount = g.potions.reduce((a, b) => a + b, 0);
+  const boss = g.mons.find(m => m.boss && !m.disguised && g.vis.has(idx(m.x, m.y)));
   const ghostInfo = g.mode === "daily" ? ghostsFor(g.day).map(gh => {
     const { frame, done, died } = ghostAt(gh, g.turns);
     return { name: gh.rec.player.name || "friend", depth: parseInt(frame?.fk ?? "1", 10), here: frame?.fk === g.floorKey, fell: done && died };
@@ -721,22 +754,23 @@ export default function LampblackDepths() {
 
   return (
     <Shell>
-      <div style={{ padding: "10px 14px 8px", display: "flex", alignItems: "center", gap: 10, borderBottom: `1px solid ${C.memWall}` }}>
-        <button className="lb-btn" onClick={leaveToHub} aria-label="back to camp"
-          style={{ background: "none", border: "none", color: C.dim, font: "inherit", fontSize: 24, padding: "0 6px 0 2px", cursor: "pointer" }}>‹</button>
+      <div style={{ padding: "8px 12px 7px", display: "flex", alignItems: "center", gap: 10, borderBottom: `1px solid ${C.memWall}` }}>
+        <button className="lb-btn" onClick={() => { stopWalk(); setPaused(true); }} aria-label="pause and inventory"
+          style={{ background: "#151A22", border: `1px solid ${C.memWall}`, borderRadius: 4, padding: 3, cursor: "pointer", lineHeight: 0 }}>
+          <SpriteIcon src={playerSprite(g)} size={30} />
+        </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: C.dim, marginBottom: 3, gap: 6 }}>
             <span className="lb-mono" style={{ color: hpPct < 0.3 ? C.blood : C.bone }}>{g.hp}/{g.maxHp}</span>
             <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {g.mode === "daily" && <b style={{ color: C.ember, fontWeight: 600 }}>DAILY · </b>}
-              d{g.depth}{g.floorKey.endsWith("r") ? "☠" : ""} · lvl {g.level} · {totalAtk(g)}atk {totalDef(g)}def
+              floor {g.depth}{g.floorKey.endsWith("r") ? "☠" : ""} · {totalAtk(g)}atk {totalDef(g)}def
             </span>
           </div>
           <div style={{ height: 4, background: C.memWall, borderRadius: 2, overflow: "hidden" }}>
             <div style={{ width: `${hpPct * 100}%`, height: "100%", background: hpPct < 0.3 ? C.blood : C.ember, transition: "width 160ms" }} />
           </div>
         </div>
-        <SpriteIcon src={playerSprite(g)} size={24} />
         {g.inv.key > 0 && (
           <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
             <SpriteIcon name="key" size={16} />
@@ -748,11 +782,26 @@ export default function LampblackDepths() {
           style={{ display: "block", width: 8, height: 8, borderRadius: 4, background: saveColor, flexShrink: 0 }} />
       </div>
 
+      {boss && (
+        <div style={{ padding: "5px 14px 6px", borderBottom: `1px solid ${C.memWall}`, background: "#1A0E0C", display: "flex", alignItems: "center", gap: 10 }}>
+          <SpriteIcon src={spriteCanvas(boss.kind)} size={20} />
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+              <b style={{ color: C.blood, fontWeight: 600 }}>{boss.name}</b>
+              {boss.charge > 0 && <span style={{ color: "#FF7A5A", fontWeight: 600 }}>get out of the red!</span>}
+            </div>
+            <div style={{ height: 5, background: "#3A1A16", borderRadius: 2, overflow: "hidden", marginTop: 3 }}>
+              <div style={{ width: `${Math.max(0, boss.hp / boss.maxHp) * 100}%`, height: "100%", background: C.blood, transition: "width 160ms" }} />
+            </div>
+          </div>
+        </div>
+      )}
+
       <RelicStrip g={g} open={relicsOpen} onToggle={() => setRelicsOpen(o => !o)} />
 
       {ghostInfo.length > 0 && (
         <div style={{ padding: "4px 14px", fontSize: 12.5, color: "#6FC4C8", borderBottom: `1px solid ${C.memWall}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {ghostInfo.map(i => `${i.name} ${i.fell ? "fell on" : i.here ? "is here ·" : "is on"} depth ${i.depth}`).join("  ·  ")}
+          {ghostInfo.map(i => `${i.name} ${i.fell ? "fell on" : i.here ? "is here ·" : "is on"} floor ${i.depth}`).join("  ·  ")}
         </div>
       )}
 
@@ -798,6 +847,8 @@ export default function LampblackDepths() {
         <ActBtn label="Ember" n={g.inv.ember} onClick={() => doAction("e")} sprite="ember" />
         <ActBtn label="Waystone" n={g.inv.waystone} onClick={() => doAction("y")} sprite="waystone" />
       </div>
+
+      {paused && <PauseMenu g={g} onResume={() => setPaused(false)} onCamp={leaveToHub} />}
     </Shell>
   );
 }

@@ -13,7 +13,10 @@ on the device after every move, and it works offline.
 | `src/game/rng.ts` | Seeded random numbers (no `Math.random` in gameplay) |
 | `src/game/relics.ts` | Relic definitions and tiers |
 | `src/game/classes.ts` | Heroes: stats, starting kit, unlock rules |
-| `src/game/zones.ts` | Zones: colors, terrain, monster pools, wardens |
+| `src/game/zones.ts` | Zones: colors, terrain, layouts, monster pools, bosses |
+| `src/game/mapgen.ts` | Level generator: rooms / halls / caverns layouts, decorations, connectivity |
+| `src/game/tiles.ts` | Map size and tile types shared by rules and generator |
+| `src/game/bestiary.ts` | Bestiary text, zone notes, achievements |
 | `src/game/replay.ts` | Run records, replay/verification, ghosts, share codes, daily calendar |
 | `src/game/sprites.ts` | 8×8 pixel-art sprites and map drawing |
 | `src/game/storage.ts` | Saving to the device, backup codes |
@@ -21,6 +24,7 @@ on the device after every move, and it works offline.
 | `src/ui/` | Shared UI bits and the daily dungeon card |
 | `scripts/make-icons.mjs` | Builds the home-screen icons from the hero sprite (`npm run icons`) |
 | `scripts/simulate.ts` | Plays hundreds of random runs to catch crashes and save bugs (`npm test`) |
+| `tools/maps.html` | Whole generated floors for every zone side by side (`npm run dev`, then `/tools/maps.html`) |
 | `tools/gallery.html` | Every sprite, gear combo and monster variant on one page (`npm run dev`, then open `/tools/gallery.html`) |
 | `ROADMAP.md` | What's done and what's next |
 

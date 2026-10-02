@@ -1,5 +1,5 @@
 import {
-  C, VW, VH, WALL, STAIRS, STAIRS_RISK, WATER, LAVA, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
+  C, VW, VH, WALL, STAIRS, STAIRS_RISK, WATER, LAVA, CHASM, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
   type Game, type Mon, type Item,
 } from "./core.ts";
 import { TIER_COLORS, type RelicId } from "./relics.ts";
@@ -341,6 +341,27 @@ export const SPRITES: Record<string, SpriteDef> = {
     pal: { p:"#6A3A8A", w:"#E6DCC9", k:"#12161E", r:"#C04A3B", d:"#3A1E4A" },
     rows: ["..dddd..",".dppppd.","dpwwrwpd","dpwkkwpd","dpwkkwpd","dprwwwpd",".dppppd.","..dddd.."],
   },
+  /* ---- bosses ---- */
+  ratking: {
+    pal: { b:"#7A5138", d:"#5C3B28", k:"#C04A3B", y:"#F2D06B", t:"#93705C" },
+    rows: ["..y.y.y.","..yyyyy.",".dbbbbbd",".bkbbbkb",".bbbbbbb","tbbbbbbb",".bdbbdb.",".b.bb.b."],
+  },
+  broodmother: {
+    pal: { b:"#3A2A48", d:"#6A4A8A", r:"#C04A3B", k:"#F2D06B" },
+    rows: ["d..dd..d",".d.bb.d.","d.bbbb.d",".bkbbkb.","dbbrrbbd",".bbrrbb.","d.bbbb.d",".d....d."],
+  },
+  lich: {
+    pal: { w:"#D8D2BE", p:"#4E3A6E", d:"#2E2040", g:"#7CF0A0", y:"#F2D06B" },
+    rows: [".y.yy.y.",".wwwwww.",".wgwwgw.","..wwww..",".pppppp.","pppddppp",".pp..pp.",".dd..dd."],
+  },
+  golem: {
+    pal: { s:"#6A5A52", d:"#3A2E2A", o:"#E9A13B", y:"#F2D06B" },
+    rows: [".ssssss.","sdoddods","ssssssss","ssdyydss","ssdoodss",".ssssss.",".ss..ss.","dss..ssd"],
+  },
+  maw: {
+    pal: { p:"#4A3270", d:"#1E1430", t:"#E6DCC9", r:"#C04A3B", w:"#E07A9A" },
+    rows: [".pppppp.","pdwwwwdp","pdwrrwdp","pttttttp","prrrrrrp","pttttttp",".pppppp.","..d..d.."],
+  },
   /* ---- heroes (same palette letters as the wanderer so armor and weapons layer the same way) ---- */
   ranger: {
     pal: { c:"#2F4A2C", d:"#4E7A46", f:"#D9B48A", k:"#12161E", w:"#A87440", s:"#D8D2BE" },
@@ -450,6 +471,14 @@ function compose(key: string, base: string, pal: Record<string, string> = {}, px
 }
 
 export function spriteCanvas(name: string) { return compose(name, name); }
+
+/* an all-dark version, for things you haven't discovered yet */
+export function silhouette(name: string) {
+  const def = SPRITES[name];
+  if (!def) return null;
+  const pal = Object.fromEntries(Object.keys(def.pal).map(k => [k, "#2A313C"]));
+  return compose(`sil|${name}`, name, pal);
+}
 
 /* Weapons held in the left hand (column 0), one look per tier in WEAPONS. */
 const column = (x: number, y0: number, y1: number, c: string): Px[] =>
@@ -566,8 +595,9 @@ export type GhostMark = { x: number; y: number; cls: string; wt: number; at: num
 
 export function drawMap(
   ctx: CanvasRenderingContext2D, g: Game, ts: number, camX: number, camY: number,
-  flashes: Record<number, string>, ghosts: GhostMark[] = [],
+  flashes: Record<number, string>, ghosts: GhostMark[] = [], targets: Set<number> = new Set(), now = 0,
 ) {
+  const marked = new Set(g.marks.map(([x, y]) => idx(x, y)));
   const seeMimics = (g.relics.lantern ?? 0) >= 3;
   const zc = zoneOf(g.depth).colors;
   ctx.imageSmoothingEnabled = false;
@@ -619,6 +649,12 @@ export function drawMap(
           ctx.fillStyle = "#8C2A12";
           ctx.fillRect(px + ts * (0.6 - t * 0.08), py + ts * 0.65, ts * 0.22, ts * 0.12);
         }
+      } else if (g.grid[i] === CHASM) {
+        ctx.fillStyle = "#020205";
+        ctx.fillRect(px, py, ts, ts);
+        ctx.fillStyle = vis ? zc.wallTop : zc.memTop;      // a lip of rock along the top edge
+        ctx.fillRect(px, py, ts, Math.max(1, Math.round(ts * 0.08)));
+        if (vis && h % 4 === 0) { ctx.fillStyle = "#3A2A5A"; ctx.fillRect(px + ts * 0.45, py + ts * 0.5, ts * 0.08, ts * 0.08); }
       } else if (h % 6 === 0) {
         ctx.fillStyle = vis ? zc.speck : zc.memSpeck;
         ctx.fillRect(px + ts * 0.3, py + ts * 0.55, ts * 0.22, ts * 0.1);
@@ -643,9 +679,31 @@ export function drawMap(
       const it = g.items.find(o => o.x === x && o.y === y);
       if (it) blit(itemSprite(it), px, py, vis ? 1 : 0.35);
 
+      // a boss's next attack: these tiles are about to be hit
+      if (marked.has(i)) {
+        const pulse = 0.35 + 0.2 * Math.sin(now / 160);
+        ctx.fillStyle = `rgba(220,50,40,${pulse.toFixed(3)})`;
+        ctx.fillRect(px, py, ts, ts);
+        ctx.strokeStyle = "rgba(255,120,90,0.9)";
+        ctx.lineWidth = Math.max(1, ts * 0.06);
+        ctx.strokeRect(px + 1, py + 1, ts - 2, ts - 2);
+      }
+
       const m = g.mons.find(o => o.x === x && o.y === y);
       if (m && m.disguised) blit(monSprite(m, seeMimics && vis), px, py, vis ? 1 : 0.35); // remembered like a chest
-      else if (m && vis) blit(monSprite(m), px, py);
+      else if (m && vis) {
+        if (m.boss) { ctx.fillStyle = "rgba(233,161,59,0.18)"; ctx.fillRect(px, py, ts, ts); }
+        blit(monSprite(m), px, py);
+        if (targets.has(i)) {
+          // in reach: little amber brackets in the corners
+          ctx.fillStyle = C.ember;
+          const k = Math.max(2, Math.round(ts * 0.22)), t2 = Math.max(1, Math.round(ts * 0.07));
+          for (const [cx, cy, sx, sy] of [[px, py, 1, 1], [px + ts, py, -1, 1], [px, py + ts, 1, -1], [px + ts, py + ts, -1, -1]]) {
+            ctx.fillRect(sx > 0 ? cx : cx - k, sy > 0 ? cy : cy - t2, k, t2);
+            ctx.fillRect(sx > 0 ? cx : cx - t2, sy > 0 ? cy : cy - k, t2, k);
+          }
+        }
+      }
 
       for (const gh of ghosts) {
         if (gh.x !== x || gh.y !== y) continue;
@@ -653,7 +711,20 @@ export function drawMap(
         else blit(ghostSprite(gh.cls, gh.wt, gh.at), px, py, 0.45);
       }
 
-      if (x === g.p.x && y === g.p.y) blit(playerSprite(g), px, py, g.hidden > 0 ? 0.45 : 1);
+      if (x === g.p.x && y === g.p.y) {
+        blit(playerSprite(g), px, py, g.hidden > 0 ? 0.45 : 1);
+        if (g.webbed > 0) {
+          // sticky web strands over the hero
+          ctx.strokeStyle = "rgba(230,230,240,0.75)";
+          ctx.lineWidth = Math.max(1, ts * 0.05);
+          ctx.beginPath();
+          ctx.moveTo(px, py); ctx.lineTo(px + ts, py + ts);
+          ctx.moveTo(px + ts, py); ctx.lineTo(px, py + ts);
+          ctx.moveTo(px + ts / 2, py); ctx.lineTo(px + ts / 2, py + ts);
+          ctx.moveTo(px, py + ts / 2); ctx.lineTo(px + ts, py + ts / 2);
+          ctx.stroke();
+        }
+      }
 
       const fl = flashes[i];
       if (fl) {

@@ -49,7 +49,7 @@
       ["long quiet + grave-iron", playerSprite({ weapon: WEAPONS[5], armor: ARMORS[4] })],
     ]);
     const kinds = ["rat","bat","goblin","slime","archer","skeleton","ghost","wraith","ogre","warden","mimic","spider","drowned","imp","eye"];
-    section("Zone wardens", [1, 2, 3, 4, 5].map(v => [VARIANTS.warden[v - 1].fullName, mon("warden", v)]));
+    section("Bosses", ["ratking", "broodmother", "lich", "golem", "maw"].map(k => [k, mon(k)]));
     section("Monsters", kinds.map(k => [k, mon(k)]));
     section("Color variants", Object.entries(VARIANTS).filter(([k]) => k !== "warden").flatMap(([k, vs]) => vs.map((v, i) => [`${v.prefix} ${k}`, mon(k, i + 1)])));
     section("Monsters with gear", [

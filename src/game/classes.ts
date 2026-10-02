@@ -29,9 +29,9 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     relics: {}, emberMul: 1, unlock: null,
   },
   ranger: {
-    name: "Ranger", blurb: "Shoots from up to 3 tiles away. Sharp eyes, light on armor.", sprite: "ranger",
+    name: "Ranger", blurb: "Shoots arrows up to 4 tiles away. Sharp eyes, light on armor.", sprite: "ranger",
     hp: 28, atk: 4, def: 0, sight: 7, tonics: 1, embers: 0, waystones: 0, weapon: -1,
-    relics: { reach: 2 }, emberMul: 1,
+    relics: { reach: 3 }, emberMul: 1,
     unlock: { text: "Reach depth 4", done: p => p.best >= 4, progress: p => `deepest so far: ${p.best}` },
   },
   mage: {
@@ -44,7 +44,7 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     name: "Knight", blurb: "Tough, armored and carries an iron sword, but sees less and brings no tonic.", sprite: "knight",
     hp: 44, atk: 5, def: 2, sight: 5, tonics: 0, embers: 0, waystones: 0, weapon: 1,
     relics: { thorns: 1 }, emberMul: 1,
-    unlock: { text: "Slay a warden", done: p => p.wardens >= 1, progress: p => `${Math.min(p.wardens, 1)} / 1` },
+    unlock: { text: "Defeat a boss", done: p => p.wardens >= 1, progress: p => `${Math.min(p.wardens, 1)} / 1` },
   },
   rogue: {
     name: "Rogue", blurb: "Floats over traps, sometimes strikes twice, knows the potion of shadow.", sprite: "rogue",
