@@ -1,8 +1,16 @@
+import { Rng, hashStr } from "./rng.ts";
+import { RELICS, RELIC_IDS, TIER_NAMES, type RelicId } from "./relics.ts";
+
 /* ============================ constants ============================ */
+
+/* Bump whenever a change would make old seeds/replays play out differently.
+   Runs only compare (and ghosts only replay) between matching rules versions. */
+export const RULES_VERSION = 2;
 
 export const MW = 31, MH = 29;          // map size
 export const VW = 11, VH = 13;          // viewport in tiles
-export const WALL = 0, FLOOR = 1, STAIRS = 2;
+export const WALL = 0, FLOOR = 1, STAIRS = 2, STAIRS_RISK = 3;
+export const isStairs = (v: number) => v === STAIRS || v === STAIRS_RISK;
 
 export const C = {
   void:    "#080A0E",
@@ -139,22 +147,38 @@ export type Mon = {
   gen: number;       // how many times a slime has split
   alerted: boolean;  // knows where you are no matter what
   disguised: boolean;// a mimic still pretending to be a chest
-  tick: number; x: number; y: number; id: string;
+  tick: number; x: number; y: number;
 };
 
 export type Pocket = "tonic" | "ember" | "waystone" | "key";
-export type ItemType = Pocket | "weapon" | "armor" | "echoes" | "potion" | "chest";
+export type ItemType = Pocket | "weapon" | "armor" | "echoes" | "potion" | "chest" | "relic";
 export type Item = {
   t: ItemType; name: string; x: number; y: number;
   atk?: number; def?: number; amt?: number; color?: number; locked?: boolean;
+  seed?: number;                 // chests: what's inside is decided when the floor is made
+  relic?: RelicId; tier?: number;
 };
 
 export type TrapType = keyof typeof TRAP_NAMES;
 export type Trap = { t: TrapType; x: number; y: number; found: boolean };
+export type Hazard = { x: number; y: number; dmg: number; turns: number }; // lava; only burns monsters
+
+export type RunMode = "free" | "daily";
+
+/* The hero's stats at the start of a run. Daily runs always use the base hero
+   so everyone competes on equal footing; free runs include echo upgrades. */
+export type StartStats = { maxHp: number; atk: number; def: number; sight: number; tonics: number; greed: number };
 
 export type Game = {
-  depth: number; grid: Uint8Array; rooms: Room[];
-  mons: Mon[]; items: Item[]; traps: Trap[];
+  /* identity: with these and `actions`, the whole run can be replayed */
+  mode: RunMode; day: string | null; seed: number; start: StartStats;
+  startedAt: number; ranked: boolean;
+  actions: string[]; replayable: boolean;
+  rng: Rng;            // the run's own random stream (combat, drops, potions…)
+  floorKey: string;    // depth + which stair you took, e.g. "4r"; floors with the same key look the same for everyone
+
+  depth: number; grid: Uint8Array;
+  mons: Mon[]; items: Item[]; traps: Trap[]; hazards: Hazard[];
   seen: Uint8Array; vis: Set<number>;
   p: Pt;
   hp: number; maxHp: number; atk: number; def: number; sight: number;
@@ -165,6 +189,9 @@ export type Game = {
   potionMap: number[];   // color -> effect
   known: boolean[];      // effect -> identified
   hidden: number;        // turns of shadow left
+  relics: Partial<Record<RelicId, number>>; // relic -> tier
+  killsSinceEmber: number;
+  perils: number;        // perilous stairs taken
   level: number; xp: number; next: number;
   echoes: number; greed: number; kills: number; turns: number;
   log: string[];
@@ -175,17 +202,24 @@ export type Meta = { echoes: number; best: number; runs: number; kills: number; 
 
 /* ============================ helpers ============================ */
 
-export const rnd = (n: number) => Math.floor(Math.random() * n);
-export const rint = (a: number, b: number) => a + rnd(b - a + 1);
-export const pick = <T,>(a: T[]): T => a[rnd(a.length)];
 export const idx = (x: number, y: number) => y * MW + x;
 export const inB = (x: number, y: number) => x >= 0 && y >= 0 && x < MW && y < MH;
-const cheb = (a: Pt, b: Pt) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
-const DIRS8 = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+export const cheb = (a: Pt, b: Pt) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+/* the 8 step directions; a move action stores the index into this list */
+export const DIRS8 = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]] as const;
 
-function shuffle<T>(a: T[]): T[] {
-  for (let i = a.length - 1; i > 0; i--) { const j = rnd(i + 1); [a[i], a[j]] = [a[j], a[i]]; }
-  return a;
+export const relicVal = (g: Game, id: RelicId) => {
+  const t = g.relics[id];
+  return t ? RELICS[id].values[t - 1] : 0;
+};
+export const sightOf = (g: Pick<Game, "sight" | "relics">) => {
+  const t = g.relics.lantern;
+  return g.sight + (t ? RELICS.lantern.values[t - 1] : 0);
+};
+export const reachOf = (g: Game) => 1 + relicVal(g, "reach");
+
+export function scoreOf(g: Game) {
+  return g.depth * 100 + g.kills * 10 + g.echoes + g.perils * 50;
 }
 
 function ctr(r: Room): Pt { return { x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) }; }
@@ -198,33 +232,35 @@ function hall(grid: Uint8Array, from: number, to: number, fixed: number, horiz: 
   }
 }
 
-function genLevel(depth: number): { grid: Uint8Array; rooms: Room[] } {
+function genLevel(r: Rng): { grid: Uint8Array; rooms: Room[] } {
   const grid = new Uint8Array(MW * MH);
   const rooms: Room[] = [];
   for (let t = 0; t < 120 && rooms.length < 9; t++) {
-    const w = rint(4, 8), h = rint(3, 6);
-    const x = rint(1, MW - w - 2), y = rint(1, MH - h - 2);
+    const w = r.range(4, 8), h = r.range(3, 6);
+    const x = r.range(1, MW - w - 2), y = r.range(1, MH - h - 2);
     if (rooms.some(o => x <= o.x + o.w + 1 && o.x <= x + w + 1 && y <= o.y + o.h + 1 && o.y <= y + h + 1)) continue;
     rooms.push({ x, y, w, h });
   }
-  rooms.forEach(r => {
-    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) grid[idx(x, y)] = FLOOR;
+  rooms.forEach(rm => {
+    for (let y = rm.y; y < rm.y + rm.h; y++) for (let x = rm.x; x < rm.x + rm.w; x++) grid[idx(x, y)] = FLOOR;
   });
   for (let i = 1; i < rooms.length; i++) {
     const a = ctr(rooms[i - 1]), b = ctr(rooms[i]);
-    if (Math.random() < 0.5) { hall(grid, a.x, b.x, a.y, true); hall(grid, a.y, b.y, b.x, false); }
+    if (r.chance(0.5)) { hall(grid, a.x, b.x, a.y, true); hall(grid, a.y, b.y, b.x, false); }
     else { hall(grid, a.y, b.y, a.x, false); hall(grid, a.x, b.x, b.y, true); }
   }
-  if (rooms.length < 2) return genLevel(depth);
-  const last = rooms[rooms.length - 1];
-  const st = ctr(last);
+  if (rooms.length < 3) return genLevel(r);
+  // two ways down: the usual stair in the last room, a perilous one in another
+  const st = ctr(rooms[rooms.length - 1]);
   grid[idx(st.x, st.y)] = STAIRS;
+  const risk = ctr(rooms[rooms.length - 2]);
+  grid[idx(risk.x, risk.y)] = STAIRS_RISK;
   return { grid, rooms };
 }
 
-function freeSpot(room: Room, grid: Uint8Array, taken: Set<number>): Pt | null {
+function freeSpot(room: Room, grid: Uint8Array, taken: Set<number>, r: Rng): Pt | null {
   for (let t = 0; t < 40; t++) {
-    const x = rint(room.x, room.x + room.w - 1), y = rint(room.y, room.y + room.h - 1);
+    const x = r.range(room.x, room.x + room.w - 1), y = r.range(room.y, room.y + room.h - 1);
     if (grid[idx(x, y)] !== FLOOR) continue;
     if (taken.has(idx(x, y))) continue;
     taken.add(idx(x, y));
@@ -233,22 +269,18 @@ function freeSpot(room: Room, grid: Uint8Array, taken: Set<number>): Pt | null {
   return null;
 }
 
-function tierFor<T>(depth: number, list: T[]): T {
-  const t = Math.min(list.length - 1, Math.floor((depth - 1) / 2.5) + (Math.random() < 0.25 ? 1 : 0));
+function tierFor<T>(depth: number, list: T[], r: Rng): T {
+  const t = Math.min(list.length - 1, Math.floor((depth - 1) / 2.5) + (r.chance(0.25) ? 1 : 0));
   return list[Math.max(0, Math.min(list.length - 1, t))];
 }
-
-const newId = () => Math.random().toString(36).slice(2);
 
 /* ============================ monsters ============================ */
 
 const baseFor = (kind: string) => kind === "warden" ? WARDEN : MONSTERS.find(m => m.k === kind);
 
-type MonStats = Omit<Mon, "x" | "y" | "id">;
-
-/* Builds a monster's stats from its kind, depth, color variant and gear. Saves only
-   store those four things, so this has to give the same answer every time. */
-function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1): MonStats | null {
+/* Builds a monster's stats from its kind, depth, color variant, gear and split
+   generation. Saves only store those, so this must give the same answer every time. */
+function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1, gen = 0): Omit<Mon, "x" | "y"> | null {
   const base = baseFor(kind);
   if (!base) return null;
   const over = Math.max(0, depth - base.min);
@@ -261,40 +293,55 @@ function makeMon(kind: string, depth: number, variant = 0, wpn = -1, arm = -1): 
   if (v) { hp *= v.hp; atk *= v.atk; def += v.def ?? 0; ech *= v.ech; xp += 2; }
   if (wpn >= 0) { atk += Math.ceil(WEAPONS[wpn].atk * 0.6); xp += 2; ech += 2; }
   if (arm >= 0) { def += Math.ceil(ARMORS[arm].def * 0.5); xp += 2; ech += 2; }
+  // every split halves what a slime is worth, so farming splits doesn't pay
+  for (let i = 0; i < gen; i++) { xp = Math.ceil(xp / 2); ech = Math.ceil(ech / 2); }
   hp = Math.round(hp);
   return {
     kind: base.k, glyph: base.g, name: v ? `${v.prefix} ${base.name}` : base.name,
     hp, maxHp: hp, atk: Math.round(atk), def, xp, ech: Math.round(ech),
     erratic: v?.erratic ?? !!base.erratic, pierce: !!base.pierce, slow: !!base.slow, boss: !!base.boss,
     ranged: !!base.ranged, phase: !!base.phase, splits: !!base.splits,
-    variant: v ? variant : 0, wpn, arm, gen: 0, alerted: false, disguised: false,
+    variant: v ? variant : 0, wpn, arm, gen, alerted: false, disguised: false,
     tick: 0,
   };
 }
 
-function rollMon(kind: string, depth: number): MonStats {
+function rollMon(kind: string, depth: number, r: Rng) {
   const base = baseFor(kind)!;
   const vs = VARIANTS[kind] ?? [];
-  const variant = vs.length && Math.random() < Math.min(0.5, 0.12 + depth * 0.04) ? 1 + rnd(vs.length) : 0;
-  const wpn = base.gear === "both" && Math.random() < Math.min(0.6, 0.15 + depth * 0.04)
-    ? WEAPONS.indexOf(tierFor(depth, WEAPONS)) : -1;
-  const arm = base.gear && Math.random() < Math.min(0.5, 0.1 + depth * 0.04)
-    ? ARMORS.indexOf(tierFor(depth, ARMORS)) : -1;
+  const variant = vs.length && r.chance(Math.min(0.5, 0.12 + depth * 0.04)) ? 1 + r.int(vs.length) : 0;
+  const wpn = base.gear === "both" && r.chance(Math.min(0.6, 0.15 + depth * 0.04))
+    ? WEAPONS.indexOf(tierFor(depth, WEAPONS, r)) : -1;
+  const arm = base.gear && r.chance(Math.min(0.5, 0.1 + depth * 0.04))
+    ? ARMORS.indexOf(tierFor(depth, ARMORS, r)) : -1;
   return makeMon(kind, depth, variant, wpn, arm)!;
 }
 
+/* perilous floors scale their monsters as if they were two floors deeper */
+const monDepth = (depth: number, floorKey: string) => depth + (floorKey.endsWith("r") ? 2 : 0);
+
 /* ============================ items ============================ */
 
-function rollItem(depth: number, bonus = 0): Omit<Item, "x" | "y"> {
-  const roll = Math.random();
+function rollRelic(r: Rng, depth: number, bonus = 0): Omit<Item, "x" | "y"> {
+  const id = r.pick(RELIC_IDS);
+  const p3 = Math.min(0.5, 0.02 + depth * 0.025 + bonus * 0.15);
+  const p2 = Math.min(0.6, 0.15 + depth * 0.04 + bonus * 0.15);
+  const x = r.next();
+  const tier = x < p3 ? 3 : x < p3 + p2 ? 2 : 1;
+  return { t: "relic", name: RELICS[id].name, relic: id, tier };
+}
+
+function rollItem(r: Rng, depth: number, bonus = 0): Omit<Item, "x" | "y"> {
+  const roll = r.next();
   const d = depth + bonus * 2;
-  if (roll < 0.24) return { t: "tonic", name: "tonic" };
-  if (roll < 0.40) return { t: "potion", name: "potion", color: rnd(POTION_COLORS.length) };
+  if (roll < 0.03) return rollRelic(r, depth, bonus);
+  if (roll < 0.25) return { t: "tonic", name: "tonic" };
+  if (roll < 0.40) return { t: "potion", name: "potion", color: r.int(POTION_COLORS.length) };
   if (roll < 0.50) return { t: "ember", name: "ember scroll" };
   if (roll < 0.58) return { t: "waystone", name: "waystone" };
-  if (roll < 0.73) { const w = tierFor(d, WEAPONS); return { t: "weapon", name: w.name, atk: w.atk }; }
-  if (roll < 0.86) { const a = tierFor(d, ARMORS); return { t: "armor", name: a.name, def: a.def }; }
-  return { t: "echoes", name: "spill of echoes", amt: rint(4, 9) + depth * 2 + bonus * 6 };
+  if (roll < 0.73) { const w = tierFor(d, WEAPONS, r); return { t: "weapon", name: w.name, atk: w.atk }; }
+  if (roll < 0.86) { const a = tierFor(d, ARMORS, r); return { t: "armor", name: a.name, def: a.def }; }
+  return { t: "echoes", name: "spill of echoes", amt: r.range(4, 9) + depth * 2 + bonus * 6 };
 }
 
 export function potionLabel(g: Game, color: number) {
@@ -302,9 +349,12 @@ export function potionLabel(g: Game, color: number) {
   return g.known[eff] ? POTION_EFFECTS[eff].name : `${POTION_COLORS[color].name} potion`;
 }
 
+export const relicLabel = (id: RelicId, tier: number) => `${RELICS[id].name} ${TIER_NAMES[tier]}`;
+export const relicBlurb = (id: RelicId, tier: number) => RELICS[id].blurb(RELICS[id].values[tier - 1], tier);
+
 /* Put an item on (x, y), or the nearest free floor next to it. */
-function dropNear(g: Game, x: number, y: number, it: Omit<Item, "x" | "y">, avoidPlayer = false): boolean {
-  const spots = [[0, 0], ...shuffle(DIRS8.slice())];
+function dropNear(g: Game, x: number, y: number, it: Omit<Item, "x" | "y">, r: Rng, avoidPlayer = false): boolean {
+  const spots = [[0, 0], ...r.shuffle(DIRS8.map(d => [d[0], d[1]]))];
   for (const [dx, dy] of spots) {
     const tx = x + dx, ty = y + dy;
     if (!inB(tx, ty) || g.grid[idx(tx, ty)] !== FLOOR) continue;
@@ -319,60 +369,68 @@ function dropNear(g: Game, x: number, y: number, it: Omit<Item, "x" | "y">, avoi
 
 /* ============================ level population ============================ */
 
-function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number) {
+function populate(level: { grid: Uint8Array; rooms: Room[] }, depth: number, floorKey: string, r: Rng) {
+  const risky = floorKey.endsWith("r");
+  const mDepth = monDepth(depth, floorKey);
   const taken = new Set<number>();
   const mons: Mon[] = [], items: Item[] = [], traps: Trap[] = [];
   const { grid, rooms } = level;
   const start = ctr(rooms[0]);
   taken.add(idx(start.x, start.y));
-  const anyRoom = () => rooms[rint(1, rooms.length - 1)];
+  const anyRoom = () => rooms[r.range(1, rooms.length - 1)];
 
-  rooms.forEach((r, i) => {
+  rooms.forEach((rm, i) => {
     if (i === 0) return;
-    const n = depth === 1 ? 1 : rint(1, depth < 5 ? 2 : 3);
+    const n = (depth === 1 ? 1 : r.range(1, depth < 5 ? 2 : 3)) + (risky ? 1 : 0);
     for (let j = 0; j < n; j++) {
-      const pool = MONSTERS.filter(m => !m.noPool && depth >= m.min && depth <= (m.max ?? 99));
-      const s = freeSpot(r, grid, taken);
+      const pool = MONSTERS.filter(m => !m.noPool && mDepth >= m.min && mDepth <= (m.max ?? 99));
+      const s = freeSpot(rm, grid, taken, r);
       if (!s) continue;
-      mons.push({ ...rollMon(pick(pool).k, depth), x: s.x, y: s.y, id: newId() });
+      mons.push({ ...rollMon(r.pick(pool).k, mDepth, r), x: s.x, y: s.y });
     }
   });
 
   if (depth % 5 === 0) {
-    const r = rooms[rooms.length - 1];
-    const s = freeSpot(r, grid, taken) || ctr(r);
-    mons.push({ ...makeMon("warden", depth)!, x: s.x, y: s.y, id: "boss" + depth });
+    const rm = rooms[rooms.length - 1];
+    const s = freeSpot(rm, grid, taken, r) || ctr(rm);
+    mons.push({ ...makeMon("warden", mDepth)!, x: s.x, y: s.y });
   }
 
-  const nItems = rint(3, 5);
+  const nItems = r.range(3, 5) + (risky ? 2 : 0);
   for (let i = 0; i < nItems; i++) {
-    const s = freeSpot(anyRoom(), grid, taken);
+    const s = freeSpot(anyRoom(), grid, taken, r);
     if (!s) continue;
-    items.push({ ...rollItem(depth), x: s.x, y: s.y });
+    items.push({ ...rollItem(r, depth, risky ? 1 : 0), x: s.x, y: s.y });
+  }
+
+  // perilous floors usually hide a relic out in the open
+  if (r.chance(risky ? 0.6 : 0.05)) {
+    const s = freeSpot(anyRoom(), grid, taken, r);
+    if (s) items.push({ ...rollRelic(r, depth, risky ? 1 : 0), x: s.x, y: s.y });
   }
 
   // a treasure chest on about half the floors; deeper down, some of them bite
-  if (Math.random() < 0.45) {
-    const s = freeSpot(anyRoom(), grid, taken);
+  if (r.chance(risky ? 0.85 : 0.45)) {
+    const s = freeSpot(anyRoom(), grid, taken, r);
     if (s) {
-      if (depth >= 3 && Math.random() < 0.22) {
-        mons.push({ ...makeMon("mimic", depth)!, disguised: true, x: s.x, y: s.y, id: newId() });
+      if (depth >= 3 && r.chance(0.22)) {
+        mons.push({ ...makeMon("mimic", mDepth)!, disguised: true, x: s.x, y: s.y });
       } else {
-        let locked = depth >= 2 && Math.random() < 0.35;
+        let locked = depth >= 2 && r.chance(0.35);
         if (locked) {
-          const k = freeSpot(anyRoom(), grid, taken);
+          const k = freeSpot(anyRoom(), grid, taken, r);
           if (k) items.push({ t: "key", name: "key", x: k.x, y: k.y }); else locked = false;
         }
-        items.push({ t: "chest", name: locked ? "locked chest" : "chest", locked, x: s.x, y: s.y });
+        items.push({ t: "chest", name: locked ? "locked chest" : "chest", locked, seed: r.u32(), x: s.x, y: s.y });
       }
     }
   }
 
-  const nTraps = depth === 1 ? rint(0, 1) : Math.min(5, rint(1, 2 + Math.floor(depth / 3)));
+  const nTraps = depth === 1 ? r.range(0, 1) : Math.min(5, r.range(1, 2 + Math.floor(depth / 3)) + (risky ? 1 : 0));
   for (let i = 0; i < nTraps; i++) {
-    const s = freeSpot(anyRoom(), grid, taken);
+    const s = freeSpot(anyRoom(), grid, taken, r);
     if (!s) continue;
-    const roll = Math.random();
+    const roll = r.next();
     let t: TrapType = depth >= 2 && roll < 0.2 ? "pit" : depth >= 2 && roll < 0.4 ? "alarm" : "spikes";
     if (t === "pit" && depth % 5 === 0) t = "spikes"; // no skipping the warden
     traps.push({ t, x: s.x, y: s.y, found: false });
@@ -416,14 +474,17 @@ function between(x0: number, y0: number, x1: number, y1: number): Pt[] {
   return pts;
 }
 
-export function computeFov(g: Pick<Game, "sight" | "p" | "grid" | "seen">) {
-  const R = g.sight;
+/* Integer-only distance checks: Math.hypot can differ between browsers, which
+   would break replays recorded on one device and checked on another. */
+export function computeFov(g: Pick<Game, "sight" | "relics" | "p" | "grid" | "seen">) {
+  const R = sightOf(g);
+  const lim = (R + 0.3) * (R + 0.3);
   const vis = new Set<number>();
   for (let y = g.p.y - R; y <= g.p.y + R; y++) {
     for (let x = g.p.x - R; x <= g.p.x + R; x++) {
       if (!inB(x, y)) continue;
-      const d = Math.hypot(x - g.p.x, y - g.p.y);
-      if (d > R + 0.3) continue;
+      const dx = x - g.p.x, dy = y - g.p.y;
+      if (dx * dx + dy * dy > lim) continue;
       if (los(g.grid, g.p.x, g.p.y, x, y)) { vis.add(idx(x, y)); g.seen[idx(x, y)] = 1; }
     }
   }
@@ -459,11 +520,11 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
   return path.reverse();
 }
 
-/* ============================ meta ============================ */
+/* ============================ starting a run ============================ */
 
 export const freshMeta = (): Meta => ({ echoes: 0, best: 0, runs: 0, kills: 0, up: {} });
 
-function playerBase(meta: Meta) {
+export function startStats(meta: Meta): StartStats {
   const u = meta.up || {};
   return {
     maxHp: 32 + 7 * (u.vigor || 0),
@@ -475,41 +536,56 @@ function playerBase(meta: Meta) {
   };
 }
 
-const freshPotions = () => ({
-  potions: POTION_COLORS.map(() => 0),
-  potionMap: shuffle(POTION_EFFECTS.map((_, i) => i)),
-  known: POTION_EFFECTS.map(() => false),
-});
+/* the daily seed: the same for everyone on the same UTC day and rules version */
+export const dailySeed = (day: string) => hashStr(`daily:${day}:rules${RULES_VERSION}`);
 
-export function newRun(meta: Meta): Game {
-  const b = playerBase(meta);
-  const depth = 1;
-  const lvl = genLevel(depth);
-  const pop = populate(lvl, depth);
+const floorRng = (seed: number, floorKey: string) => new Rng(hashStr(`${seed}:floor:${floorKey}`));
+
+export type RunSetup = {
+  mode: RunMode; seed: number; day: string | null; start: StartStats; ranked: boolean; startedAt: number;
+};
+
+export function newRun(s: RunSetup): Game {
+  const floorKey = "1s";
+  const fr = floorRng(s.seed, floorKey);
+  const lvl = genLevel(fr);
+  const pop = populate(lvl, 1, floorKey, fr);
+  const pr = new Rng(hashStr(`${s.seed}:potions`));
   const g: Game = {
-    depth, grid: lvl.grid, rooms: lvl.rooms,
-    mons: pop.mons, items: pop.items, traps: pop.traps,
+    mode: s.mode, day: s.day, seed: s.seed, start: s.start, startedAt: s.startedAt, ranked: s.ranked,
+    actions: [], replayable: true,
+    rng: new Rng(hashStr(`${s.seed}:run`)),
+    floorKey,
+    depth: 1, grid: lvl.grid,
+    mons: pop.mons, items: pop.items, traps: pop.traps, hazards: [],
     seen: new Uint8Array(MW * MH), vis: new Set(),
     p: { x: pop.start.x, y: pop.start.y },
-    hp: b.maxHp, maxHp: b.maxHp, atk: b.atk, def: b.def, sight: b.sight,
+    hp: s.start.maxHp, maxHp: s.start.maxHp, atk: s.start.atk, def: s.start.def, sight: s.start.sight,
     weapon: null, armor: null,
-    inv: { tonic: b.tonics, ember: 0, waystone: 0, key: 0 },
-    ...freshPotions(), hidden: 0,
+    inv: { tonic: s.start.tonics, ember: 0, waystone: 0, key: 0 },
+    potions: POTION_COLORS.map(() => 0),
+    potionMap: pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
+    known: POTION_EFFECTS.map(() => false),
+    hidden: 0, relics: {}, killsSinceEmber: 0, perils: 0,
     level: 1, xp: 0, next: 12,
-    echoes: 0, greed: b.greed, kills: 0, turns: 0,
-    log: ["You wake at the mouth of the depths. Something below is still burning."],
+    echoes: 0, greed: s.start.greed, kills: 0, turns: 0,
+    log: [s.mode === "daily"
+      ? `The daily dungeon for ${s.day}. Everyone walks these same halls today.`
+      : "You wake at the mouth of the depths. Something below is still burning."],
     dead: false, path: null,
   };
   g.vis = computeFov(g);
   return g;
 }
 
-export function descend(g: Game) {
+export function descend(g: Game, choice: "s" | "r") {
   g.depth += 1;
-  const lvl = genLevel(g.depth);
-  const pop = populate(lvl, g.depth);
-  g.grid = lvl.grid; g.rooms = lvl.rooms;
-  g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps;
+  g.floorKey = `${g.depth}${choice}`;
+  const fr = floorRng(g.seed, g.floorKey);
+  const lvl = genLevel(fr);
+  const pop = populate(lvl, g.depth, g.floorKey, fr);
+  g.grid = lvl.grid;
+  g.mons = pop.mons; g.items = pop.items; g.traps = pop.traps; g.hazards = [];
   g.seen = new Uint8Array(MW * MH);
   g.p = { x: pop.start.x, y: pop.start.y };
   g.path = null;
@@ -518,7 +594,12 @@ export function descend(g: Game) {
   const before = g.hp;
   g.hp = Math.min(g.maxHp, g.hp + rest);
   g.vis = computeFov(g);
-  say(g, `Depth ${g.depth}. The air gets colder.`);
+  if (choice === "r") {
+    g.perils += 1;
+    say(g, `Depth ${g.depth}, the perilous way. More monsters, better treasure.`);
+  } else {
+    say(g, `Depth ${g.depth}. The air gets colder.`);
+  }
   if (g.hp > before) say(g, `You catch your breath on the stair. +${g.hp - before}.`);
 }
 
@@ -527,13 +608,22 @@ export function say(g: Game, s: string) { g.log.push(s); if (g.log.length > 24) 
 export function totalAtk(g: Game) { return g.atk + (g.weapon ? g.weapon.atk : 0); }
 export function totalDef(g: Game) { return g.def + (g.armor ? g.armor.def : 0); }
 
-function dmgRoll(atk: number, def: number) {
-  return Math.max(1, Math.round((atk - def) * (0.82 + Math.random() * 0.36)));
+function dmgRoll(r: Rng, atk: number, def: number) {
+  return Math.max(1, Math.round((atk - def) * (0.82 + r.next() * 0.36)));
 }
 
 function hurtPlayer(g: Game, d: number) {
   g.hp -= d;
-  if (g.hp <= 0) { g.hp = 0; g.dead = true; }
+  if (g.hp > 0) return;
+  const phoenix = relicVal(g, "phoenix");
+  if (phoenix) {
+    g.hp = Math.max(1, Math.round(g.maxHp * phoenix / 100));
+    delete g.relics.phoenix;
+    say(g, "The Phoenix Feather bursts into flame. You rise again!");
+    return;
+  }
+  g.hp = 0;
+  g.dead = true;
 }
 
 /* ============================ turn logic ============================ */
@@ -551,48 +641,77 @@ function grantXp(g: Game, n: number) {
 }
 
 function killMon(g: Game, m: Mon) {
+  if (!g.mons.includes(m)) return;
   g.mons = g.mons.filter(o => o !== m);
   g.kills += 1;
-  g.echoes += m.ech;
+  const coin = relicVal(g, "coin");
+  g.echoes += m.ech + Math.round(m.ech * coin / 100);
   say(g, `The ${m.name} falls.`);
   grantXp(g, m.xp);
-  if (m.wpn >= 0 && Math.random() < 0.4) {
-    const w = WEAPONS[m.wpn];
-    if (dropNear(g, m.x, m.y, { t: "weapon", name: w.name, atk: w.atk })) say(g, `Its ${w.name} clatters to the floor.`);
+
+  const fang = relicVal(g, "fang");
+  if (fang && g.hp < g.maxHp) {
+    const heal = Math.min(fang, g.maxHp - g.hp);
+    g.hp += heal;
+    say(g, `The Fang drinks deep. +${heal}.`);
   }
-  if (m.arm >= 0 && Math.random() < 0.4) {
+  const kindling = relicVal(g, "kindling");
+  if (kindling && ++g.killsSinceEmber >= kindling) {
+    g.killsSinceEmber = 0;
+    g.inv.ember += 1;
+    say(g, "Your Kindling Pouch smolders. +1 ember scroll.");
+  }
+
+  if (m.wpn >= 0 && g.rng.chance(0.4)) {
+    const w = WEAPONS[m.wpn];
+    if (dropNear(g, m.x, m.y, { t: "weapon", name: w.name, atk: w.atk }, g.rng)) say(g, `Its ${w.name} clatters to the floor.`);
+  }
+  if (m.arm >= 0 && g.rng.chance(0.4)) {
     const a = ARMORS[m.arm];
-    if (dropNear(g, m.x, m.y, { t: "armor", name: a.name, def: a.def })) say(g, `Its ${a.name} could still be worn.`);
+    if (dropNear(g, m.x, m.y, { t: "armor", name: a.name, def: a.def }, g.rng)) say(g, `Its ${a.name} could still be worn.`);
   }
   if (m.kind === "mimic") {
-    for (let i = 0; i < 2; i++) dropNear(g, m.x, m.y, rollItem(g.depth, 1));
+    for (let i = 0; i < 2; i++) dropNear(g, m.x, m.y, rollItem(g.rng, g.depth, 1), g.rng);
     say(g, "It coughs up what it swallowed.");
+  }
+  if (m.boss) {
+    dropNear(g, m.x, m.y, rollRelic(g.rng, g.depth, 2), g.rng);
+    say(g, "Something precious glints where the warden fell.");
   }
 }
 
 function splitSlime(g: Game, m: Mon) {
   if (!m.splits || m.gen >= 2 || m.hp < 4) return;
-  const spot = shuffle(DIRS8.slice()).map(([dx, dy]) => ({ x: m.x + dx, y: m.y + dy })).find(s =>
+  const spot = g.rng.shuffle(DIRS8.map(([dx, dy]) => ({ x: m.x + dx, y: m.y + dy }))).find(s =>
     inB(s.x, s.y) && g.grid[idx(s.x, s.y)] !== WALL && !(s.x === g.p.x && s.y === g.p.y)
     && !g.mons.some(o => o.x === s.x && o.y === s.y));
   if (!spot) return;
   const half = Math.floor(m.hp / 2);
-  m.hp -= half;
-  m.gen += 1;
-  const child = makeMon(m.kind, g.depth, m.variant)!;
-  child.hp = half; child.maxHp = half; child.gen = m.gen; child.alerted = true;
-  child.xp = Math.ceil(child.xp / 2); child.ech = Math.ceil(child.ech / 2);
-  g.mons.push({ ...child, x: spot.x, y: spot.y, id: newId() });
+  const gen = m.gen + 1;
+  const parent = makeMon(m.kind, monDepth(g.depth, g.floorKey), m.variant, -1, -1, gen)!;
+  m.hp -= half; m.gen = gen; m.xp = parent.xp; m.ech = parent.ech;
+  g.mons.push({ ...parent, hp: half, maxHp: half, alerted: true, x: spot.x, y: spot.y });
   say(g, `The ${m.name} splits in two!`);
+}
+
+function strike(g: Game, m: Mon, flash: Flash) {
+  const d = dmgRoll(g.rng, totalAtk(g), m.def);
+  m.hp -= d;
+  flash(idx(m.x, m.y), "hit");
+  if (m.hp <= 0) { killMon(g, m); return false; }
+  say(g, `You hit the ${m.name} for ${d}.`);
+  return true;
 }
 
 export function playerAttack(g: Game, m: Mon, flash: Flash) {
   m.alerted = true;
-  const d = dmgRoll(totalAtk(g), m.def);
-  m.hp -= d;
-  flash(idx(m.x, m.y), "hit");
-  if (m.hp <= 0) killMon(g, m);
-  else { say(g, `You hit the ${m.name} for ${d}.`); splitSlime(g, m); }
+  if (!strike(g, m, flash)) return;
+  const twin = relicVal(g, "twin");
+  if (twin && g.rng.chance(twin / 100)) {
+    say(g, "Quicksilver! You strike again.");
+    if (!strike(g, m, flash)) return;
+  }
+  splitSlime(g, m);
 }
 
 export function revealMimic(g: Game, m: Mon) {
@@ -601,31 +720,51 @@ export function revealMimic(g: Game, m: Mon) {
   say(g, "The chest has teeth! It's a MIMIC!");
 }
 
+/* the player was hit by m: thorns bite back, magma erupts underneath it */
+function onPlayerHit(g: Game, m: Mon, melee: boolean, flash: Flash) {
+  const magma = g.relics.magma;
+  if (magma) {
+    const dmg = RELICS.magma.values[magma - 1];
+    const turns = magma + 1;
+    const h = g.hazards.find(o => o.x === m.x && o.y === m.y);
+    if (h) { h.turns = Math.max(h.turns, turns); h.dmg = Math.max(h.dmg, dmg); }
+    else g.hazards.push({ x: m.x, y: m.y, dmg, turns });
+  }
+  const thorns = relicVal(g, "thorns");
+  if (thorns && melee) {
+    m.hp -= thorns;
+    flash(idx(m.x, m.y), "hit");
+    if (m.hp <= 0) killMon(g, m);
+  }
+}
+
 export function monsterTurn(g: Game, flash: Flash) {
   for (const m of [...g.mons]) {
-    if (m.disguised) continue;
+    if (!g.mons.includes(m) || m.disguised) continue;
     if (m.slow) { m.tick = (m.tick + 1) % 2; if (m.tick === 1) continue; }
     const dist = cheb(m, g.p);
     const canSee = m.phase || los(g.grid, m.x, m.y, g.p.x, g.p.y);
     const aware = m.alerted || (g.hidden <= 0 && dist <= g.sight + 2 && canSee);
 
     if (dist === 1 && (g.hidden <= 0 || m.alerted)) {
-      const d = dmgRoll(m.atk, m.pierce ? 0 : totalDef(g));
+      const d = dmgRoll(g.rng, m.atk, m.pierce ? 0 : totalDef(g));
       say(g, `The ${m.name} hits you for ${d}.`);
       flash(idx(g.p.x, g.p.y), "hurt");
       hurtPlayer(g, d);
       if (g.dead) return;
+      onPlayerHit(g, m, true, flash);
       continue;
     }
 
     if (m.ranged && aware && dist >= 2 && dist <= 5 && los(g.grid, m.x, m.y, g.p.x, g.p.y)) {
       for (const pt of between(m.x, m.y, g.p.x, g.p.y)) flash(idx(pt.x, pt.y), "arrow");
-      if (Math.random() < 0.25) { say(g, "An arrow whistles past your ear."); continue; }
-      const d = dmgRoll(m.atk, totalDef(g));
+      if (g.rng.chance(0.25)) { say(g, "An arrow whistles past your ear."); continue; }
+      const d = dmgRoll(g.rng, m.atk, totalDef(g));
       say(g, `The ${m.name}'s arrow hits you for ${d}.`);
       flash(idx(g.p.x, g.p.y), "hurt");
       hurtPlayer(g, d);
       if (g.dead) return;
+      onPlayerHit(g, m, false, flash);
       continue;
     }
 
@@ -636,7 +775,7 @@ export function monsterTurn(g: Game, flash: Flash) {
       && !g.mons.some(o => o !== m && o.x === tx && o.y === ty);
 
     let nx = m.x, ny = m.y;
-    if (aware && !(m.erratic && Math.random() < 0.35)) {
+    if (aware && !(m.erratic && g.rng.chance(0.35))) {
       const dx = Math.sign(g.p.x - m.x), dy = Math.sign(g.p.y - m.y);
       const tries = Math.abs(g.p.x - m.x) > Math.abs(g.p.y - m.y)
         ? [[dx, 0], [0, dy], [dx, dy]] : [[0, dy], [dx, 0], [dx, dy]];
@@ -644,24 +783,42 @@ export function monsterTurn(g: Game, flash: Flash) {
         if (ax === 0 && ay === 0) continue;
         if (free(m.x + ax, m.y + ay)) { nx = m.x + ax; ny = m.y + ay; break; }
       }
-    } else if (Math.random() < 0.4) {
-      const [ax, ay] = pick([[0,1],[0,-1],[1,0],[-1,0]]);
+    } else if (g.rng.chance(0.4)) {
+      const [ax, ay] = g.rng.pick([[0,1],[0,-1],[1,0],[-1,0]]);
       if (free(m.x + ax, m.y + ay)) { nx = m.x + ax; ny = m.y + ay; }
     }
     m.x = nx; m.y = ny;
   }
 }
 
+function burnHazards(g: Game, flash: Flash) {
+  for (const h of g.hazards) {
+    const m = g.mons.find(o => o.x === h.x && o.y === h.y && !o.disguised);
+    if (m) {
+      m.hp -= h.dmg;
+      flash(idx(m.x, m.y), "hit");
+      if (m.hp <= 0) { say(g, `The ${m.name} burns in the lava.`); killMon(g, m); }
+    }
+    h.turns -= 1;
+  }
+  g.hazards = g.hazards.filter(h => h.turns > 0);
+}
+
 function spotTraps(g: Game) {
+  const sharp = (g.relics.lantern ?? 0) >= 2;
   for (const t of g.traps) {
-    if (t.found || !g.vis.has(idx(t.x, t.y)) || cheb(t, g.p) > 2) continue;
-    if (Math.random() < 0.25) { t.found = true; say(g, `You spot a ${TRAP_NAMES[t.t]}.`); }
+    if (t.found || !g.vis.has(idx(t.x, t.y))) continue;
+    if (sharp || (cheb(t, g.p) <= 2 && g.rng.chance(0.25))) {
+      t.found = true;
+      say(g, `You spot a ${TRAP_NAMES[t.t]}.`);
+    }
   }
 }
 
 /* Everything that happens after the player acts. */
 export function endTurn(g: Game, flash: Flash) {
   monsterTurn(g, flash);
+  if (!g.dead) burnHazards(g, flash);
   g.turns += 1;
   if (g.hidden > 0) { g.hidden -= 1; if (g.hidden === 0) say(g, "The shadow slips off you."); }
   g.vis = computeFov(g);
@@ -671,20 +828,27 @@ export function endTurn(g: Game, flash: Flash) {
 function triggerTrap(g: Game, flash?: Flash) {
   const t = g.traps.find(o => o.x === g.p.x && o.y === g.p.y);
   if (!t) return;
+  const wasFound = t.found;
   t.found = true;
   g.path = null;
+  const feather = relicVal(g, "feather");
+  if (feather && g.rng.chance(feather / 100)) {
+    say(g, `Your Feather Boots carry you lightly over the ${TRAP_NAMES[t.t]}.`);
+    return;
+  }
   if (t.t === "spikes") {
-    const d = rint(3, 5) + g.depth;
+    const d = g.rng.range(3, 5) + g.depth;
     say(g, `Spikes jab up from the floor! -${d}.`);
     flash?.(idx(g.p.x, g.p.y), "hurt");
     hurtPlayer(g, d);
   } else if (t.t === "pit") {
-    const d = rint(2, 4) + g.depth;
+    const d = g.rng.range(2, 4) + g.depth;
     hurtPlayer(g, d);
     if (g.dead) { say(g, "The floor gives way, and so do you."); return; }
     say(g, `The floor gives way! You fall. -${d}.`);
-    descend(g);
+    descend(g, "s");
   } else {
+    if (wasFound) return;
     for (const m of g.mons) if (!m.disguised) m.alerted = true;
     say(g, "CLANG! An alarm bell. Everything on this floor heard that.");
   }
@@ -692,8 +856,12 @@ function triggerTrap(g: Game, flash?: Flash) {
 
 function openChest(g: Game, chest: Item) {
   g.items = g.items.filter(i => i !== chest);
-  const n = 2 + (Math.random() < 0.3 ? 1 : 0);
-  for (let i = 0; i < n; i++) dropNear(g, chest.x, chest.y, rollItem(g.depth, 1), true);
+  const r = new Rng(chest.seed ?? g.rng.u32());
+  const n = 2 + (r.chance(0.3) ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    const it = i === 0 && r.chance(0.35) ? rollRelic(r, g.depth, 1) : rollItem(r, g.depth, 1);
+    dropNear(g, chest.x, chest.y, it, r, true);
+  }
   say(g, "The chest creaks open. Treasure spills out!");
 }
 
@@ -711,6 +879,8 @@ export function enterTile(g: Game, flash?: Flash) {
   }
   pickUp(g);
   triggerTrap(g, flash);
+  const tile = g.grid[idx(g.p.x, g.p.y)];
+  if (tile === STAIRS_RISK) say(g, "These stairs reek of danger. Tougher monsters below, but richer loot.");
 }
 
 export function pickUp(g: Game) {
@@ -722,6 +892,19 @@ export function pickUp(g: Game) {
   } else if (it.t === "potion") {
     const c = it.color ?? 0;
     g.potions[c] += 1; say(g, `You pocket a ${potionLabel(g, c)}.`);
+  } else if (it.t === "relic" && it.relic && it.tier) {
+    const cur = g.relics[it.relic] ?? 0;
+    if (it.tier > cur) {
+      g.relics[it.relic] = it.tier;
+      say(g, cur
+        ? `Your ${RELICS[it.relic].name} grows stronger! Now tier ${TIER_NAMES[it.tier]}.`
+        : `Relic! ${relicLabel(it.relic, it.tier)}: ${relicBlurb(it.relic, it.tier)}.`);
+      if (it.relic === "lantern") g.vis = computeFov(g);
+    } else {
+      const v = 15 * it.tier;
+      g.echoes += v;
+      say(g, `Your ${RELICS[it.relic].name} is already as strong. +${v} echoes.`);
+    }
   } else if (it.t === "echoes") {
     const amt = it.amt ?? 0;
     g.echoes += amt; say(g, `${amt} echoes, still warm.`);
@@ -800,7 +983,7 @@ export function burnEmber(g: Game, flash: Flash) {
   for (const m of targets) {
     if (m.disguised) revealMimic(g, m);
     m.alerted = true;
-    const d = rint(9, 15) + g.depth;
+    const d = g.rng.range(9, 15) + g.depth;
     m.hp -= d;
     flash(idx(m.x, m.y), "hit");
     if (m.hp <= 0) killMon(g, m);
@@ -813,13 +996,78 @@ export function castWaystone(g: Game, flash?: Flash) {
   const spots: number[] = [];
   for (let i = 0; i < MW * MH; i++) if (g.seen[i] && g.grid[i] !== WALL) spots.push(i);
   const far = spots.filter(i => {
-    const x = i % MW, y = (i / MW) | 0;
-    return Math.hypot(x - g.p.x, y - g.p.y) > 7 && !g.mons.some(m => m.x === x && m.y === y);
+    const dx = i % MW - g.p.x, dy = ((i / MW) | 0) - g.p.y;
+    return dx * dx + dy * dy > 49 && !g.mons.some(m => idx(m.x, m.y) === i);
   });
-  const t = pick(far.length ? far : spots);
+  const t = g.rng.pick(far.length ? far : spots);
   g.p = { x: t % MW, y: (t / MW) | 0 };
   say(g, "The waystone pulls, and the room changes.");
   enterTile(g, flash);
+}
+
+/* ============================ actions ============================ */
+/* Every player decision is a short string, so a whole run is a list of them:
+     m0..m7   step / bump-attack in DIRS8 direction
+     a<dx>.<dy> reach attack at an offset (Reaching Gauntlet)
+     w wait · t tonic · p<c> potion · e ember · y waystone · d take the stairs */
+
+export const stepAction = (dx: number, dy: number) => `m${DIRS8.findIndex(d => d[0] === dx && d[1] === dy)}`;
+
+export function canReach(g: Game, m: Mon) {
+  const dist = cheb(m, g.p);
+  return dist >= 2 && dist <= reachOf(g) && g.vis.has(idx(m.x, m.y)) && los(g.grid, g.p.x, g.p.y, m.x, m.y);
+}
+
+function doStep(g: Game, k: number, flash: Flash): boolean {
+  const d = DIRS8[k];
+  if (!d) return false;
+  const tx = g.p.x + d[0], ty = g.p.y + d[1];
+  if (!inB(tx, ty)) return false;
+  // monsters before walls: ghosts can hang inside walls and still be hit
+  const m = g.mons.find(o => o.x === tx && o.y === ty);
+  if (m?.disguised) { revealMimic(g, m); return true; }
+  if (m) { playerAttack(g, m, flash); return true; }
+  if (g.grid[idx(tx, ty)] === WALL) return false;
+  g.p = { x: tx, y: ty };
+  enterTile(g, flash);
+  return true;
+}
+
+function doReach(g: Game, dx: number, dy: number, flash: Flash): boolean {
+  const m = g.mons.find(o => o.x === g.p.x + dx && o.y === g.p.y + dy);
+  if (!m || !canReach(g, m)) return false;
+  if (m.disguised) { revealMimic(g, m); return true; }
+  playerAttack(g, m, flash);
+  return true;
+}
+
+/* Applies one action; returns false (and changes nothing) if it isn't legal.
+   Legal actions are appended to g.actions, which is the run's replay. */
+export function applyAction(g: Game, a: string, flash: Flash): boolean {
+  if (g.dead) return false;
+  const arg = a.slice(1);
+  let ok = true;
+  switch (a[0]) {
+    case "d": {
+      const tile = g.grid[idx(g.p.x, g.p.y)];
+      if (!isStairs(tile)) return false;
+      descend(g, tile === STAIRS_RISK ? "r" : "s");
+      g.actions.push(a);
+      return true; // taking the stairs doesn't give monsters a turn
+    }
+    case "m": ok = doStep(g, Number(arg), flash); break;
+    case "a": { const [dx, dy] = arg.split(".").map(Number); ok = doReach(g, dx, dy, flash); break; }
+    case "w": say(g, "You wait."); break;
+    case "t": ok = g.inv.tonic > 0; if (ok) drinkTonic(g); break;
+    case "p": ok = (g.potions[Number(arg)] ?? 0) > 0; if (ok) drinkPotion(g, Number(arg)); break;
+    case "e": ok = g.inv.ember > 0; if (ok) burnEmber(g, flash); break;
+    case "y": ok = g.inv.waystone > 0; if (ok) castWaystone(g, flash); break;
+    default: return false;
+  }
+  if (!ok) return false;
+  g.actions.push(a);
+  if (!g.dead) endTurn(g, flash);
+  return true;
 }
 
 /* ============================ serialization ============================ */
@@ -838,7 +1086,8 @@ function unrle(s: string) {
 
 /* kind, x, y, hp, tick, then (v2+) variant, weapon, armor, split gen, flags */
 type SavedMon = [string, number, number, number, number, number?, number?, number?, number?, number?];
-type SavedItem = [ItemType, number, number, number, string];
+/* type, x, y, number (atk/def/amount/color/tier/locked), name (relic id for relics), chest seed */
+type SavedItem = [ItemType, number, number, number, string, number?];
 
 /* Fields added after v1 are optional so older saves still load. */
 export type SavedRun = {
@@ -852,20 +1101,31 @@ export type SavedRun = {
   l?: string[];
   t?: [TrapType, number, number, number][];
   pt?: number[]; pm?: number[]; kn?: number[]; hd?: number;
+  // v3: identity + replay
+  md?: RunMode; dy?: string | null; sd?: number; rs?: number; fk?: string;
+  st?: StartStats; sa?: number; rk?: number; ac?: string; rp?: number;
+  rl?: Partial<Record<RelicId, number>>; hz?: [number, number, number, number][]; ks?: number; pr?: number;
 };
 
 const itemNum = (i: Item) =>
-  i.t === "potion" ? i.color ?? 0 : i.t === "chest" ? (i.locked ? 1 : 0) : i.atk ?? i.def ?? i.amt ?? 0;
+  i.t === "potion" ? i.color ?? 0
+  : i.t === "chest" ? (i.locked ? 1 : 0)
+  : i.t === "relic" ? i.tier ?? 1
+  : i.atk ?? i.def ?? i.amt ?? 0;
 
 export function serializeRun(g: Game): SavedRun {
   return {
-    ver: 2,
+    ver: 3,
     d: g.depth,
     G: rle(Array.from(g.grid).join("")),
     S: rle(Array.from(g.seen).join("")),
     m: g.mons.map(m => [m.kind, m.x, m.y, m.hp, m.tick || 0, m.variant, m.wpn, m.arm, m.gen,
                         (m.alerted ? 1 : 0) | (m.disguised ? 2 : 0)]),
-    i: g.items.map(i => [i.t, i.x, i.y, itemNum(i), i.name]),
+    i: g.items.map(i => {
+      const row: SavedItem = [i.t, i.x, i.y, itemNum(i), i.t === "relic" ? i.relic! : i.name];
+      if (i.seed !== undefined) row.push(i.seed);
+      return row;
+    }),
     p: [g.p.x, g.p.y],
     h: [g.hp, g.maxHp, g.atk, g.def, g.sight],
     w: g.weapon ? [g.weapon.name, g.weapon.atk] : null,
@@ -876,43 +1136,60 @@ export function serializeRun(g: Game): SavedRun {
     l: g.log.slice(-3),
     t: g.traps.map(t => [t.t, t.x, t.y, t.found ? 1 : 0]),
     pt: g.potions.slice(), pm: g.potionMap.slice(), kn: g.known.map(k => (k ? 1 : 0)), hd: g.hidden,
+    md: g.mode, dy: g.day, sd: g.seed, rs: g.rng.s, fk: g.floorKey,
+    st: g.start, sa: g.startedAt, rk: g.ranked ? 1 : 0, ac: g.actions.join(","), rp: g.replayable ? 1 : 0,
+    rl: { ...g.relics }, hz: g.hazards.map(h => [h.x, h.y, h.dmg, h.turns]), ks: g.killsSinceEmber, pr: g.perils,
   };
 }
 
 export function deserializeRun(o: SavedRun): Game {
   const depth = o.d;
-  const fresh = freshPotions();
+  const legacy = o.sd === undefined;           // saved before runs had seeds
+  const floorKey = o.fk ?? `${depth}s`;
+  const mDepth = monDepth(depth, floorKey);
+  const seed = o.sd ?? hashStr(`legacy:${o.G}`);
+  const pr = new Rng(hashStr(`${seed}:potions`));
   const g: Game = {
+    mode: o.md ?? "free", day: o.dy ?? null, seed,
+    start: o.st ?? { maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4], tonics: 0, greed: o.e[1] },
+    startedAt: o.sa ?? Date.now(), ranked: o.rk === 1,
+    actions: o.ac ? o.ac.split(",") : [], replayable: !legacy && o.rp !== 0,
+    rng: new Rng(o.rs ?? hashStr(`${seed}:run:${o.e[3]}`)),
+    floorKey,
     depth,
     grid: Uint8Array.from(unrle(o.G).split("").map(Number)),
     seen: Uint8Array.from(unrle(o.S).split("").map(Number)),
     vis: new Set(),
-    rooms: [],
     mons: o.m.flatMap(([k, x, y, hp, tick, variant, wpn, arm, gen, flags]) => {
-      const b = makeMon(k, depth, variant ?? 0, wpn ?? -1, arm ?? -1);
+      const b = makeMon(k, mDepth, variant ?? 0, wpn ?? -1, arm ?? -1, gen ?? 0);
       if (!b) return [];
-      return [{ ...b, x, y, hp, tick, gen: gen ?? 0,
-                alerted: !!((flags ?? 0) & 1), disguised: !!((flags ?? 0) & 2), id: newId() }];
+      return [{ ...b, x, y, hp, tick,
+                alerted: !!((flags ?? 0) & 1), disguised: !!((flags ?? 0) & 2) }];
     }),
-    items: o.i.map(([t, x, y, n, name]) => {
+    items: o.i.map(([t, x, y, n, name, seed]) => {
       const it: Item = { t, x, y, name };
       if (t === "weapon") it.atk = n;
       else if (t === "armor") it.def = n;
       else if (t === "echoes") it.amt = n;
       else if (t === "potion") it.color = n;
-      else if (t === "chest") it.locked = n === 1;
+      else if (t === "chest") { it.locked = n === 1; if (seed !== undefined) it.seed = seed; }
+      else if (t === "relic") { it.relic = name as RelicId; it.tier = n; it.name = RELICS[name as RelicId]?.name ?? name; }
       return it;
     }),
     traps: (o.t ?? []).map(([t, x, y, f]) => ({ t, x, y, found: f === 1 })),
+    hazards: (o.hz ?? []).map(([x, y, dmg, turns]) => ({ x, y, dmg, turns })),
     p: { x: o.p[0], y: o.p[1] },
     hp: o.h[0], maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4],
     weapon: o.w ? { name: o.w[0], atk: o.w[1] } : null,
     armor: o.a ? { name: o.a[0], def: o.a[1] } : null,
     inv: { tonic: o.v[0], ember: o.v[1], waystone: o.v[2], key: o.v[3] ?? 0 },
-    potions: o.pt ?? fresh.potions,
-    potionMap: o.pm ?? fresh.potionMap,
-    known: o.kn ? o.kn.map(k => k === 1) : fresh.known,
+    potions: o.pt ?? POTION_COLORS.map(() => 0),
+    potionMap: o.pm ?? pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
+    known: o.kn ? o.kn.map(k => k === 1) : POTION_EFFECTS.map(() => false),
     hidden: o.hd ?? 0,
+    relics: { ...(o.rl ?? {}) },
+    killsSinceEmber: o.ks ?? 0,
+    perils: o.pr ?? 0,
     level: o.x[0], xp: o.x[1], next: o.x[2],
     echoes: o.e[0], greed: o.e[1], kills: o.e[2], turns: o.e[3],
     log: o.l?.length ? o.l : ["You come back to yourself in the dark."],

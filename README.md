@@ -9,10 +9,14 @@ on the device after every move, and it works offline.
 
 | Path | What's there |
 |---|---|
-| `src/game/core.ts` | Map generation, monsters, items, combat, save format |
+| `src/game/core.ts` | Map generation, monsters, items, relics, combat, actions, save format |
+| `src/game/rng.ts` | Seeded random numbers (no `Math.random` in gameplay) |
+| `src/game/relics.ts` | Relic definitions and tiers |
+| `src/game/replay.ts` | Run records, replay/verification, ghosts, share codes, daily calendar |
 | `src/game/sprites.ts` | 8×8 pixel-art sprites and map drawing |
 | `src/game/storage.ts` | Saving to the device, backup codes |
 | `src/App.tsx` | Screens and controls |
+| `src/ui/` | Shared UI bits and the daily dungeon card |
 | `scripts/make-icons.mjs` | Builds the home-screen icons from the hero sprite (`npm run icons`) |
 | `scripts/simulate.ts` | Plays hundreds of random runs to catch crashes and save bugs (`npm test`) |
 | `tools/gallery.html` | Every sprite, gear combo and monster variant on one page (`npm run dev`, then open `/tools/gallery.html`) |
@@ -48,3 +52,11 @@ version the next time the app is opened (sometimes it takes a second launch).
   Notes, or use to move progress to the iPad.
 - If the save format changes, bump the `:v1` keys and add a migration in `storage.ts`
   so existing progress isn't lost.
+
+## Daily dungeons & sharing
+
+- The daily seed comes from the UTC date and `RULES_VERSION`, so everyone on the same version gets the same floors.
+- Every player action is logged (`g.actions`); a run is fully described by seed + starting stats + actions.
+- **Share my run** makes a compressed `LAMPRUN1Z:` code. **Add a friend's run** replays it on your device, marks it
+  verified if the replay matches its score, adds it to the scoreboard and shows it as a ghost.
+- If you change gameplay rules, bump `RULES_VERSION` — runs from different versions don't mix.

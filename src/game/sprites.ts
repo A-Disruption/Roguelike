@@ -1,7 +1,8 @@
 import {
-  C, VW, VH, WALL, STAIRS, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
+  C, VW, VH, WALL, STAIRS, STAIRS_RISK, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
   type Game, type Mon, type Item,
-} from "./core";
+} from "./core.ts";
+import { TIER_COLORS, type RelicId } from "./relics.ts";
 
 /* ============================ sprites ============================ */
 /* 8x8 pixel art. '.' is transparent; other chars index the sprite's palette. */
@@ -321,6 +322,51 @@ export const SPRITES: Record<string, SpriteDef> = {
       "........",
     ],
   },
+  /* ---- relics (tier shown by colored corners) ---- */
+  fang: {
+    pal: { w:"#E6DCC9", r:"#C04A3B", d:"#9A9484" },
+    rows: ["........","..wwww..","..wwwd..","...wwd..","...ww...","...wr...","....r...","........"],
+  },
+  reach: {
+    pal: { g:"#A3ACB6", d:"#6A737D", y:"#D4C36A" },
+    rows: ["..g.g.g.","..g.g.g.","..ggggg.",".dggggg.",".dgggg..","..yyy...","..ddd...","........"],
+  },
+  magma: {
+    pal: { r:"#C04A3B", o:"#E9A13B", y:"#F2D06B" },
+    rows: ["........",".rr..rr.","roorroor","rooyyoor",".rooyor.","..roor..","...rr...","........"],
+  },
+  thorns: {
+    pal: { s:"#C9CFD6", b:"#7A5138", d:"#4A3524" },
+    rows: ["..s..s..",".s.ss.s.","bbbbbbbb","bdbbdbbd","bbbbbbbb",".s.ss.s.","..s..s..","........"],
+  },
+  coin: {
+    pal: { y:"#F2D06B", d:"#B08A2E", l:"#FFF4C2" },
+    rows: ["..yyyy..",".yllyyy.","ylyyyydy","yyydyydy","yyydyydy","yyyyyddy",".yddddy.","..yyyy.."],
+  },
+  feather: {
+    pal: { w:"#E6DCC9", d:"#9A9484", b:"#6FC4C8" },
+    rows: ["......w.",".....ww.","....wbw.","...wbww.","..wbww..",".wwww...",".d......","d......."],
+  },
+  kindling: {
+    pal: { b:"#8B5A2B", d:"#5E3B1C", f:"#E9A13B", y:"#F2D06B" },
+    rows: ["...f....","..fyf...","..dbbd..",".bbbbbb.","bbbbbbbb","bdbbbbdb",".bbbbbb.","........"],
+  },
+  phoenix: {
+    pal: { o:"#E9A13B", r:"#C04A3B", y:"#F2D06B", d:"#8C4A1A" },
+    rows: ["......o.",".....oy.","....ory.","...oryo.","..orro..",".orro...",".d......","d......."],
+  },
+  lantern: {
+    pal: { d:"#4A3524", y:"#E9A13B", l:"#FFF4C2" },
+    rows: ["...dd...","..d..d..",".dddddd.",".dyyyyd.",".dylyyd.",".dyyyyd.",".dddddd.","........"],
+  },
+  twin: {
+    pal: { s:"#C9CFD6", l:"#E8ECF0", h:"#7A5138" },
+    rows: ["l......l",".s....s.","..s..s..","...ss...","...ss...","..h..h..",".h....h.","........"],
+  },
+  grave: {
+    pal: { s:"#7C8794", d:"#4A5260", k:"#2A3038" },
+    rows: ["........","..ssss..",".ssksss.",".skkkss.",".ssksss.",".ssssss.","dddddddd","........"],
+  },
   alarm: {
     pal: { g:"#D4C36A", d:"#8C7A3A", k:"#3B2A1B" },
     rows: [
@@ -428,8 +474,20 @@ export function playerSprite(g: Pick<Game, "weapon" | "armor">) {
   return compose(`player|${wt}|${at}`, "player", pal, wt >= 0 ? WEAPON_PX[wt] : []);
 }
 
-export function monSprite(m: Mon) {
-  if (m.disguised) return spriteCanvas("chest");
+/* friends' ghosts: the hero in spectral teal, still showing their gear */
+export function ghostSprite(wt: number, at: number) {
+  return compose(`ghosthero|${wt}|${at}`, "player",
+    { c:"#3F7F86", d:"#6FC4C8", f:"#CFF3F2", k:"#12161E", e:"#BFF3F0" },
+    wt >= 0 ? WEAPON_PX[wt].map(([x, y]) => [x, y, "#BFF3F0"] as Px) : []);
+}
+
+export function relicSprite(id: RelicId, tier: number) {
+  const c = TIER_COLORS[tier] ?? TIER_COLORS[1];
+  return compose(`relic|${id}|${tier}`, id, {}, [[0, 0, c], [7, 0, c], [0, 7, c], [7, 7, c]]);
+}
+
+export function monSprite(m: Mon, seeThrough = false) {
+  if (m.disguised && !seeThrough) return spriteCanvas("chest");
   const pal = m.variant > 0 ? VARIANTS[m.kind]?.[m.variant - 1]?.pal ?? {} : {};
   const px: Px[] = [];
   if (m.arm >= 0) for (const [x, y] of TORSO[m.kind] ?? []) px.push([x, y, ARMOR_COLORS[m.arm].main]);
@@ -452,6 +510,7 @@ export function itemSprite(it: Item) {
   }
   if (it.t === "potion") return potionSprite(it.color ?? 0);
   if (it.t === "chest" && it.locked) return compose("chest|locked", "chest", { g: "#C9CFD6", d: "#3A3F48" });
+  if (it.t === "relic" && it.relic) return relicSprite(it.relic, it.tier ?? 1);
   return spriteCanvas(it.t);
 }
 
@@ -465,10 +524,13 @@ const FLASH_COLORS: Record<string, string> = {
   arrow: "rgba(233,161,59,0.35)",
 };
 
+export type GhostMark = { x: number; y: number; wt: number; at: number; dead: boolean };
+
 export function drawMap(
   ctx: CanvasRenderingContext2D, g: Game, ts: number, camX: number, camY: number,
-  flashes: Record<number, string>,
+  flashes: Record<number, string>, ghosts: GhostMark[] = [],
 ) {
+  const seeMimics = (g.relics.lantern ?? 0) >= 3;
   ctx.imageSmoothingEnabled = false;
   const blit = (cv: HTMLCanvasElement | null, px: number, py: number, alpha = 1) => {
     if (!cv) return;
@@ -505,6 +567,17 @@ export function drawMap(
       }
 
       if (g.grid[i] === STAIRS) blit(spriteCanvas("stairs"), px, py, vis ? 1 : 0.4);
+      if (g.grid[i] === STAIRS_RISK) blit(compose("stairs|risk", "stairs", { a: "#7A2A22", b: "#3A1410", c: "#C04A3B" }), px, py, vis ? 1 : 0.4);
+
+      const lava = g.hazards.find(o => o.x === x && o.y === y);
+      if (lava && vis) {
+        ctx.fillStyle = "rgba(200,70,30,0.7)";
+        ctx.fillRect(px, py, ts, ts);
+        ctx.fillStyle = "#F2C46B";
+        const t = (h + g.turns * 7) % 5;
+        ctx.fillRect(px + ts * (0.15 + t * 0.12), py + ts * 0.3, ts * 0.14, ts * 0.14);
+        ctx.fillRect(px + ts * (0.6 - t * 0.08), py + ts * 0.65, ts * 0.12, ts * 0.12);
+      }
 
       const tr = g.traps.find(o => o.found && o.x === x && o.y === y);
       if (tr) blit(spriteCanvas(tr.t), px, py, vis ? 1 : 0.4);
@@ -513,8 +586,14 @@ export function drawMap(
       if (it) blit(itemSprite(it), px, py, vis ? 1 : 0.35);
 
       const m = g.mons.find(o => o.x === x && o.y === y);
-      if (m && m.disguised) blit(monSprite(m), px, py, vis ? 1 : 0.35); // a mimic is remembered like a chest
+      if (m && m.disguised) blit(monSprite(m, seeMimics && vis), px, py, vis ? 1 : 0.35); // remembered like a chest
       else if (m && vis) blit(monSprite(m), px, py);
+
+      for (const gh of ghosts) {
+        if (gh.x !== x || gh.y !== y) continue;
+        if (gh.dead) blit(spriteCanvas("grave"), px, py, vis ? 0.9 : 0.4);
+        else blit(ghostSprite(gh.wt, gh.at), px, py, 0.45);
+      }
 
       if (x === g.p.x && y === g.p.y) blit(playerSprite(g), px, py, g.hidden > 0 ? 0.45 : 1);
 

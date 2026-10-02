@@ -1,73 +1,28 @@
-import { useEffect, useRef, useReducer, useState, useCallback, type ReactNode, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useRef, useReducer, useState, useCallback, useMemo, type MouseEvent } from "react";
 import {
-  C, MW, MH, VW, VH, STAIRS, WALL, UPGRADES, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
-  newRun, descend, playerAttack, endTurn, enterTile, revealMimic, bfsPath, drinkTonic, drinkPotion,
-  burnEmber, castWaystone, potionLabel,
-  type Game, type Meta, type Upgrade, type Flash,
+  C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
+  newRun, startStats, freshMeta, dailySeed, applyAction, stepAction, canReach, bfsPath, potionLabel,
+  relicLabel, relicBlurb, scoreOf,
+  type Game, type Meta, type Upgrade, type Flash, type RunMode,
 } from "./game/core";
-import { drawMap, spriteCanvas, playerSprite, potionSprite } from "./game/sprites";
+import { drawMap, playerSprite, potionSprite, relicSprite, type GhostMark } from "./game/sprites";
 import {
-  loadMeta, saveMeta, loadRun, saveRun, clearRun, requestPersist, isStandalone, isIOS,
-  exportCode, importCode,
+  loadMeta, saveMeta, loadRun, saveRun, clearRun, loadActive, requestPersist, isStandalone, isIOS,
+  exportCode, importCode, loadProfile, saveProfile, loadRecords, addRecord, loadFriends, addFriendRun, removeFriendRun,
 } from "./game/storage";
+import {
+  makeRecord, buildGhost, ghostAt, encodeRecord, decodeRecord, todayUTC, prettyDay,
+  type Ghost, type Profile, type RunRecord,
+} from "./game/replay";
+import { RULES_VERSION } from "./game/core";
+import { randomSeed } from "./game/rng";
+import { RELICS, TIER_NAMES, type RelicId } from "./game/relics";
+import { Shell, SpriteIcon, ActBtn, linkBtn, btn, act3, textArea, sectionTitle, Stat, Row } from "./ui/bits";
+import { DailyCard } from "./ui/Daily";
 
-/* ============================ chrome ============================ */
-
-const css = `
-.lb { font-family:'IBM Plex Sans Condensed', ui-sans-serif, system-ui, sans-serif; }
-.lb-mono { font-family:'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
-.lb-btn { -webkit-tap-highlight-color:transparent; transition: background 120ms, border-color 120ms; }
-.lb-btn:active { transform: translateY(1px); }
-.lb-btn:focus-visible { outline:2px solid ${C.ember}; outline-offset:2px; }
-canvas.lb-map { touch-action: manipulation; -webkit-tap-highlight-color:transparent; image-rendering: pixelated; }
-`;
-
-function Shell({ children }: { children: ReactNode }) {
-  return (
-    <div className="lb" style={{
-      height: "100dvh", width: "100%", background: C.void, color: C.bone,
-      display: "flex", flexDirection: "column", overflow: "hidden",
-      paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
-      paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
-      boxSizing: "border-box",
-    }}>
-      <style dangerouslySetInnerHTML={{ __html: css }} />
-      {children}
-    </div>
-  );
-}
-
-function ActBtn({ label, n, onClick, sprite, active }: { label: string; n: number; onClick: () => void; sprite: string; active?: boolean }) {
-  const off = n <= 0;
-  return (
-    <button className="lb-btn" disabled={off} onClick={onClick}
-      style={{ ...act3(off ? C.memGlyph : C.bone), flex: 1, opacity: off ? 0.35 : 1, minWidth: 0,
-               ...(active ? { border: `1px solid ${C.ember}` } : {}),
-               display: "flex", flexDirection: "column", gap: 2, alignItems: "center" }}>
-      <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <SpriteIcon name={sprite} size={16} />
-        <span className="lb-mono" style={{ fontSize: 13 }}>{n}</span>
-      </span>
-      <span style={{ fontSize: 10.5, color: C.dim }}>{label}</span>
-    </button>
-  );
-}
-
-function SpriteIcon({ name, src: given, size = 16 }: { name?: string; src?: HTMLCanvasElement | null; size?: number }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const cv = ref.current;
-    if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = size * dpr; cv.height = size * dpr;
-    const cx = cv.getContext("2d")!;
-    cx.imageSmoothingEnabled = false;
-    cx.clearRect(0, 0, cv.width, cv.height);
-    const src = given ?? (name ? spriteCanvas(name) : null);
-    if (src) cx.drawImage(src, 0, 0, 8, 8, 0, 0, size * dpr, size * dpr);
-  }, [name, given, size]);
-  return <canvas ref={ref} className="lb-map" style={{ width: size, height: size, display: "block" }} />;
-}
+/* a run's id is derived from its seed and start time, so an in-progress share
+   and the finished run share an id and the newer one replaces the older */
+const runId = (g: Game) => `${g.mode}-${g.seed.toString(36)}-${g.startedAt.toString(36)}`;
 
 /* ============================ potion tray ============================ */
 
@@ -94,6 +49,38 @@ function PotionTray({ g, onDrink, onClose }: { g: Game; onDrink: (color: number)
         );
       })}
       <button onClick={onClose} style={{ ...linkBtn, alignSelf: "flex-start" }}>Close</button>
+    </div>
+  );
+}
+
+/* ============================ relics ============================ */
+
+function RelicStrip({ g, open, onToggle }: { g: Game; open: boolean; onToggle: () => void }) {
+  const owned = (Object.keys(g.relics) as RelicId[]).filter(id => g.relics[id]);
+  if (!owned.length) return null;
+  return (
+    <div style={{ borderBottom: `1px solid ${C.memWall}` }}>
+      <button className="lb-btn" onClick={onToggle} aria-label="relics"
+        style={{ display: "flex", gap: 10, alignItems: "center", width: "100%", padding: "5px 14px", background: "none", border: "none", cursor: "pointer", flexWrap: "wrap" }}>
+        {owned.map(id => (
+          <span key={id} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+            <SpriteIcon src={relicSprite(id, g.relics[id]!)} size={18} />
+            <span className="lb-mono" style={{ fontSize: 11, color: C.dim }}>{TIER_NAMES[g.relics[id]!]}</span>
+          </span>
+        ))}
+        <span style={{ marginLeft: "auto", fontSize: 11.5, color: C.memGlyph }}>{open ? "hide" : "relics"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "2px 14px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
+          {owned.map(id => (
+            <div key={id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13.5 }}>
+              <SpriteIcon src={relicSprite(id, g.relics[id]!)} size={20} />
+              <span><b style={{ fontWeight: 600 }}>{relicLabel(id, g.relics[id]!)}</b>
+                <span style={{ color: C.dim }}> · {relicBlurb(id, g.relics[id]!)}</span></span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -127,11 +114,7 @@ function Backup({ onRestored }: { onRestored: () => void }) {
     onRestored();
   };
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} style={linkBtn}>Back up or restore a save</button>
-    );
-  }
+  if (!open) return <button onClick={() => setOpen(true)} style={linkBtn}>Back up or restore a save</button>;
 
   return (
     <div style={{ border: `1px solid ${C.memWall}`, borderRadius: 3, padding: 12, margin: "4px 0 12px" }}>
@@ -142,9 +125,7 @@ function Backup({ onRestored }: { onRestored: () => void }) {
         )}
       </div>
       <textarea value={code} onChange={e => setCode(e.target.value)} placeholder="…or paste a save code here to restore it"
-        rows={3} className="lb-mono"
-        style={{ width: "100%", boxSizing: "border-box", background: C.memFloor, color: C.bone, border: `1px solid ${C.memWall}`,
-                 borderRadius: 3, padding: 8, fontSize: 12, resize: "vertical", userSelect: "text", WebkitUserSelect: "text" }} />
+        rows={3} className="lb-mono" style={textArea} />
       <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
         <button className="lb-btn" onClick={restore} style={{ ...act3(C.ember), flex: 1 }}>Restore from code</button>
         <button onClick={() => { setOpen(false); setMsg(null); setCode(""); }} style={linkBtn}>Close</button>
@@ -157,23 +138,51 @@ function Backup({ onRestored }: { onRestored: () => void }) {
 /* ============================ component ============================ */
 
 type SaveState = "idle" | "saved" | "failed";
+type Summary = {
+  mode: RunMode; day: string | null; depth: number; kills: number; earned: number; level: number;
+  score: number; record: boolean; ranked: boolean; abandoned: boolean;
+};
 
 export default function LampblackDepths() {
-  const G = useRef<Game | null>(null);
+  const runs = useRef<Record<RunMode, Game | null>>({ free: null, daily: null });
+  const G = useRef<Game | null>(null);  // the run on screen
   const [, force] = useReducer((x: number) => x + 1, 0);
   const [screen, setScreen] = useState<"loading" | "hub" | "game" | "death">("loading");
-  const [meta, setMeta] = useState<Meta>(loadMeta);
-  const [hasRun, setHasRun] = useState(false);
+  const [meta, setMetaState] = useState<Meta>(loadMeta);
+  const metaRef = useRef(meta);
+  const setMeta = (m: Meta) => { metaRef.current = m; setMetaState(m); saveMeta(m); };
+  const [profile, setProfileState] = useState<Profile>(loadProfile);
+  const [records, setRecords] = useState<RunRecord[]>(loadRecords);
+  const [friends, setFriends] = useState<RunRecord[]>(loadFriends);
   const [flashes, setFlashes] = useState<Record<number, string>>({});
   const [ts, setTs] = useState(30);
-  const [summary, setSummary] = useState<{ depth: number; kills: number; earned: number; level: number; record: boolean } | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [installed] = useState(isStandalone);
   const [tray, setTray] = useState(false);
+  const [relicsOpen, setRelicsOpen] = useState(false);
+  const [now, setNow] = useState(Date.now());
   const mapBox = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const walkTimer = useRef<number | undefined>(undefined);
   const flashTimer = useRef<Record<number, number>>({});
+  const ghostCache = useRef(new Map<string, Ghost>());
+
+  const today = todayUTC(now);
+
+  /* ---------------- ghosts ---------------- */
+
+  const ghostsFor = useCallback((day: string | null) => {
+    if (!day) return [];
+    return friends.filter(r => r.mode === "daily" && r.day === day).map(r => {
+      const key = `${r.id}|${r.actions.length}`;
+      let gh = ghostCache.current.get(key);
+      if (!gh) { gh = buildGhost(r); ghostCache.current.set(key, gh); }
+      return gh;
+    });
+  }, [friends]);
+
+  const todaysGhosts = useMemo(() => ghostsFor(today), [ghostsFor, today]);
 
   /* ---------------- storage ---------------- */
 
@@ -194,20 +203,43 @@ export default function LampblackDepths() {
     };
   }, [persistRun]);
 
-  /* boot: resume straight into the run if there is one */
+  const stopWalk = useCallback(() => {
+    clearTimeout(walkTimer.current);
+    if (G.current) G.current.path = null;
+  }, []);
+
+  /* boot: resume straight into whichever run was last on screen */
   const loadAll = useCallback((resume: boolean) => {
-    stopWalkRaw();
+    stopWalk();
     setMeta(loadMeta());
-    G.current = loadRun();
-    setHasRun(!!G.current);
+    setProfileState(loadProfile());
+    setRecords(loadRecords());
+    setFriends(loadFriends());
+    runs.current = { free: loadRun("free"), daily: loadRun("daily") };
+    const active = loadActive();
+    G.current = runs.current[active] ?? runs.current.free ?? runs.current.daily;
     if (G.current) setSaveState("saved");
     setScreen(resume && G.current ? "game" : "hub");
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopWalk]);
 
   useEffect(() => {
     loadAll(true);
     requestPersist();
   }, [loadAll]);
+
+  /* tick the daily countdown while on the main screen */
+  useEffect(() => {
+    if (screen !== "hub") return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [screen]);
+
+  const setName = (name: string) => {
+    const p = { ...profile, name };
+    setProfileState(p);
+    saveProfile(p);
+  };
 
   /* ---------------- canvas ---------------- */
 
@@ -225,6 +257,15 @@ export default function LampblackDepths() {
     return () => { ro.disconnect(); window.removeEventListener("resize", fit); };
   }, [screen]);
 
+  const ghostMarks = (g: Game): GhostMark[] => {
+    if (g.mode !== "daily") return [];
+    return ghostsFor(g.day).flatMap(gh => {
+      const { frame, done, died } = ghostAt(gh, g.turns);
+      if (!frame || frame.fk !== g.floorKey) return [];
+      return [{ x: frame.x, y: frame.y, wt: frame.wt, at: frame.at, dead: done && died }];
+    });
+  };
+
   useEffect(() => {
     const cv = canvasRef.current, g = G.current;
     if (!cv || !g || screen !== "game") return;
@@ -235,7 +276,7 @@ export default function LampblackDepths() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const camX = Math.max(0, Math.min(MW - VW, g.p.x - (VW >> 1)));
     const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
-    drawMap(ctx, g, ts, camX, camY, flashes);
+    drawMap(ctx, g, ts, camX, camY, flashes, ghostMarks(g));
   });
 
   /* ---------------- turns ---------------- */
@@ -248,49 +289,34 @@ export default function LampblackDepths() {
     }, 170);
   }, []);
 
-  const finishRun = useCallback(() => {
-    const g = G.current!;
+  const finishRun = useCallback((g: Game, abandoned = false) => {
+    const m = metaRef.current;
     const earned = Math.round(g.echoes * g.greed);
-    const nm: Meta = {
-      ...meta, echoes: meta.echoes + earned, best: Math.max(meta.best, g.depth),
-      runs: meta.runs + 1, kills: meta.kills + g.kills,
-    };
-    setMeta(nm);
-    setSummary({ depth: g.depth, kills: g.kills, earned, level: g.level, record: g.depth > meta.best });
-    setHasRun(false);
-    saveMeta(nm);
-    clearRun();
+    setMeta({
+      ...m, echoes: m.echoes + earned, best: Math.max(m.best, g.depth),
+      runs: m.runs + 1, kills: m.kills + g.kills,
+    });
+    if (g.replayable) setRecords(addRecord(makeRecord(g, runId(g), loadProfile(), __APP_VERSION__, true)));
+    setSummary({
+      mode: g.mode, day: g.day, depth: g.depth, kills: g.kills, earned, level: g.level,
+      score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned,
+    });
+    clearRun(g.mode);
+    runs.current[g.mode] = null;
+    if (G.current === g) G.current = null;
     setScreen("death");
-  }, [meta]);
+  }, []);
 
-  const act = useCallback((fn: (g: Game) => void) => {
+  /* the single way the player changes the game: every legal action is logged for replays */
+  const doAction = useCallback((a: string) => {
     const g = G.current;
-    if (!g || g.dead) return;
-    fn(g);
-    if (g.dead) { force(); setTimeout(finishRun, 550); return; }
-    endTurn(g, flash);
-    if (g.dead) { force(); setTimeout(finishRun, 550); return; }
+    if (!g || g.dead) return false;
+    if (!applyAction(g, a, flash)) return false;
+    if (g.dead) { force(); setTimeout(() => finishRun(g), 550); return true; }
     persistRun();
     force();
-  }, [flash, finishRun, persistRun]);
-
-  const tryStep = useCallback((tx: number, ty: number) => {
-    const g = G.current!;
-    if (!inB(tx, ty)) return false;
-    // check monsters before walls: ghosts can hang inside walls and still be hit
-    const m = g.mons.find(o => o.x === tx && o.y === ty);
-    if (m?.disguised) { g.path = null; act(gg => revealMimic(gg, m)); return true; }
-    if (m) { act(gg => playerAttack(gg, m, flash)); return true; }
-    if (g.grid[idx(tx, ty)] === WALL) return false;
-    act(gg => { gg.p = { x: tx, y: ty }; enterTile(gg, flash); });
     return true;
-  }, [act, flash]);
-
-  function stopWalkRaw() {
-    clearTimeout(walkTimer.current);
-    if (G.current) G.current.path = null;
-  }
-  const stopWalk = useCallback(stopWalkRaw, []);
+  }, [flash, finishRun, persistRun]);
 
   const enemyInSight = (g: Game) => g.mons.some(m => !m.disguised && g.vis.has(idx(m.x, m.y)));
 
@@ -300,11 +326,11 @@ export default function LampblackDepths() {
     if (enemyInSight(g)) { g.path = null; force(); return; }
     const next = g.path.shift()!;
     const item = g.items.some(i => i.x === next.x && i.y === next.y);
-    tryStep(next.x, next.y);
-    if (!g.dead && g.path && g.path.length && !item && !enemyInSight(g)) {
+    const ok = doAction(stepAction(next.x - g.p.x, next.y - g.p.y));
+    if (ok && !g.dead && g.path && g.path.length && !item && !enemyInSight(g)) {
       walkTimer.current = window.setTimeout(stepWalk, 85);
     } else { g.path = null; force(); }
-  }, [tryStep]);
+  }, [doAction]);
 
   const onCanvasTap = useCallback((e: MouseEvent<HTMLCanvasElement>) => {
     const g = G.current;
@@ -314,55 +340,114 @@ export default function LampblackDepths() {
     const camY = Math.max(0, Math.min(MH - VH, g.p.y - (VH >> 1)));
     const tx = camX + Math.floor((e.clientX - rect.left) / ts);
     const ty = camY + Math.floor((e.clientY - rect.top) / ts);
+    if (!inB(tx, ty)) return;
     if (g.path) { stopWalk(); force(); return; }
-    const d = Math.max(Math.abs(tx - g.p.x), Math.abs(ty - g.p.y));
-    if (d === 0) { act(gg => say(gg, "You hold still and listen.")); return; }
-    if (d === 1) { tryStep(tx, ty); return; }
-    if (enemyInSight(g)) { act(gg => say(gg, "Not with something watching you.")); return; }
+    const dx = tx - g.p.x, dy = ty - g.p.y;
+    const d = Math.max(Math.abs(dx), Math.abs(dy));
+    if (d === 0) { doAction("w"); return; }
+    if (d === 1) { doAction(stepAction(dx, dy)); return; }
+    // Reaching Gauntlet: strike a monster that's a few tiles away
+    const m = g.mons.find(o => o.x === tx && o.y === ty && g.vis.has(idx(tx, ty)));
+    if (m && canReach(g, m)) { doAction(`a${dx}.${dy}`); return; }
+    if (enemyInSight(g)) { say(g, "Not with something watching you."); force(); return; }
     const path = bfsPath(g, tx, ty);
     if (!path) return;
     g.path = path;
     stepWalk();
-  }, [ts, act, tryStep, stepWalk, stopWalk]);
+  }, [ts, doAction, stepWalk, stopWalk]);
 
-  const onTonic = () => act(drinkTonic);
-  const onEmber = () => act(g => burnEmber(g, flash));
-  const onWaystone = () => act(g => castWaystone(g, flash));
-  const onPotion = (c: number) => { setTray(false); act(g => drinkPotion(g, c)); };
+  const onPotion = (c: number) => { setTray(false); doAction(`p${c}`); };
 
-  const takeStairs = () => {
-    const g = G.current!;
-    if (g.grid[idx(g.p.x, g.p.y)] !== STAIRS) return;
-    descend(g);
-    persistRun();
-    force();
-  };
+  /* ---------------- starting & leaving runs ---------------- */
 
-  const startRun = () => {
-    if (hasRun && !confirm("Abandon this run? Echoes from it will be lost.")) return;
+  const enter = (g: Game) => {
     stopWalk();
-    G.current = newRun(meta);
-    setHasRun(true);
+    G.current = g;
+    runs.current[g.mode] = g;
+    setTray(false);
+    setRelicsOpen(false);
     persistRun();
     setScreen("game");
   };
 
+  const startFree = () => {
+    if (runs.current.free && !confirm("Abandon this run? Echoes from it will be lost.")) return;
+    enter(newRun({
+      mode: "free", seed: randomSeed(), day: null, start: startStats(metaRef.current), ranked: false, startedAt: Date.now(),
+    }));
+  };
+
+  const playDaily = () => {
+    const live = runs.current.daily;
+    if (live) { enter(live); return; }
+    const day = todayUTC();
+    const ranked = !records.some(r => r.mode === "daily" && r.day === day);
+    enter(newRun({
+      mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta()), ranked, startedAt: Date.now(),
+    }));
+  };
+
+  const giveUpDaily = () => {
+    const g = runs.current.daily;
+    if (!g) return;
+    if (!confirm("End this daily run now? Your score so far goes on the board.")) return;
+    finishRun(g, true);
+  };
+
+  const leaveToHub = () => {
+    stopWalk();
+    persistRun();
+    setScreen("hub");
+  };
+
+  /* ---------------- sharing ---------------- */
+
+  const shareDaily = async (): Promise<string | null> => {
+    const live = runs.current.daily;
+    const named = { ...profile, name: profile.name.trim() };
+    let rec: RunRecord | null = null;
+    if (live && live.day === today && live.replayable) rec = makeRecord(live, runId(live), named, __APP_VERSION__, false);
+    else {
+      const mine = records.filter(r => r.mode === "daily" && r.day === today);
+      const pickRec = mine.find(r => r.ranked) ?? mine[mine.length - 1];
+      if (pickRec) rec = { ...pickRec, player: named };
+    }
+    return rec ? encodeRecord(rec) : null;
+  };
+
+  const addFriend = async (code: string): Promise<string> => {
+    let rec: RunRecord;
+    try { rec = await decodeRecord(code); }
+    catch (e) { return e instanceof Error ? e.message : "That code didn't work."; }
+    if (rec.player.id === profile.id) return "That's your own run!";
+    if (rec.mode !== "daily") return "Only daily dungeon runs can be shared.";
+    if (rec.rules !== RULES_VERSION) return "That run is from a different version of the game. Both of you should update (reopen the app), then share again.";
+    const gh = buildGhost(rec);
+    ghostCache.current.set(`${rec.id}|${rec.actions.length}`, gh);
+    setFriends(addFriendRun(rec));
+    const when = rec.day === today ? "today" : prettyDay(rec.day ?? today);
+    return gh.verified
+      ? `Added ${rec.player.name || "your friend"}'s run from ${when}: ${rec.result.score} points. Verified ✓`
+      : `Added ${rec.player.name || "your friend"}'s run, but its replay didn't match its score, so treat it with suspicion.`;
+  };
+
+  /* ---------------- upgrades ---------------- */
+
   const buy = (u: Upgrade) => {
-    const lvl = meta.up[u.k] || 0;
+    const m = metaRef.current;
+    const lvl = m.up[u.k] || 0;
     if (lvl >= u.max) return;
     const cost = u.costs[lvl];
-    if (meta.echoes < cost) return;
-    const nm = { ...meta, echoes: meta.echoes - cost, up: { ...meta.up, [u.k]: lvl + 1 } };
-    setMeta(nm);
-    saveMeta(nm);
+    if (m.echoes < cost) return;
+    setMeta({ ...m, echoes: m.echoes - cost, up: { ...m.up, [u.k]: lvl + 1 } });
   };
 
   const wipe = () => {
     if (!confirm("Erase ALL progress? Echoes, upgrades and the current run will be gone for good.")) return;
-    const nm = { echoes: 0, best: 0, runs: 0, kills: 0, up: {} };
-    setMeta(nm); G.current = null; setHasRun(false);
-    saveMeta(nm);
-    clearRun();
+    setMeta(freshMeta());
+    G.current = null;
+    runs.current.free = null;
+    clearRun("free");
   };
 
   useEffect(() => () => { clearTimeout(walkTimer.current); }, []);
@@ -374,6 +459,7 @@ export default function LampblackDepths() {
   }
 
   if (screen === "hub") {
+    const free = runs.current.free;
     return (
       <Shell>
         <div style={{ flex: 1, overflowY: "auto", padding: "26px 20px 24px", maxWidth: 520, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
@@ -392,6 +478,21 @@ export default function LampblackDepths() {
             </div>
           )}
 
+          <DailyCard
+            day={today} now={now}
+            live={runs.current.daily}
+            mine={records.filter(r => r.mode === "daily" && r.day === today)}
+            ghosts={todaysGhosts}
+            name={profile.name}
+            onName={setName}
+            onPlay={playDaily}
+            onGiveUp={giveUpDaily}
+            onShare={shareDaily}
+            onAdd={addFriend}
+            onRemoveFriend={id => setFriends(removeFriendRun(id))}
+          />
+
+          <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Your own descent</h2>
           <div style={{ display: "flex", gap: 22, padding: "14px 0", borderTop: `1px solid ${C.memWall}`, borderBottom: `1px solid ${C.memWall}` }}>
             <Stat label="echoes" value={meta.echoes} color={C.verd} />
             <Stat label="deepest" value={meta.best || "—"} color={C.ember} />
@@ -400,17 +501,17 @@ export default function LampblackDepths() {
           </div>
 
           <div style={{ display: "flex", gap: 10, margin: "18px 0 26px" }}>
-            {hasRun && G.current && (
-              <button className="lb-btn" onClick={() => setScreen("game")} style={btn(C.ember, true)}>
-                Return to depth {G.current.depth}
+            {free && (
+              <button className="lb-btn" onClick={() => enter(free)} style={btn(C.ember, true)}>
+                Return to depth {free.depth}
               </button>
             )}
-            <button className="lb-btn" onClick={startRun} style={btn(hasRun ? C.dim : C.ember, !hasRun)}>
-              {hasRun ? "Abandon and start over" : "Descend"}
+            <button className="lb-btn" onClick={startFree} style={btn(free ? C.dim : C.ember, !free)}>
+              {free ? "Abandon and start over" : "Descend"}
             </button>
           </div>
 
-          <h2 style={{ fontSize: 13, fontWeight: 600, color: C.dim, margin: "0 0 4px", letterSpacing: "0.04em" }}>Spend echoes</h2>
+          <h2 style={sectionTitle}>Spend echoes <span style={{ fontWeight: 400 }}>(not used in the daily)</span></h2>
           <div>
             {UPGRADES.map(u => {
               const lvl = meta.up[u.k] || 0;
@@ -440,7 +541,7 @@ export default function LampblackDepths() {
             })}
           </div>
 
-          <h2 style={{ fontSize: 13, fontWeight: 600, color: C.dim, margin: "22px 0 8px", letterSpacing: "0.04em" }}>What you will meet</h2>
+          <h2 style={{ ...sectionTitle, margin: "22px 0 8px" }}>What you will meet</h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginBottom: 20 }}>
             {[["rat","cellar rat"],["bat","blind bat"],["goblin","goblin"],["skeleton","skeleton"],
               ["slime","slime"],["archer","goblin archer"],["ghost","ghost"],
@@ -451,17 +552,29 @@ export default function LampblackDepths() {
             ))}
           </div>
 
+          <h2 style={{ ...sectionTitle, margin: "0 0 8px" }}>Relics you might find</h2>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 14px", marginBottom: 20 }}>
+            {(Object.keys(RELICS) as RelicId[]).map(id => (
+              <div key={id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.dim }}>
+                <SpriteIcon src={relicSprite(id, 1)} size={18} /> {RELICS[id].name}
+              </div>
+            ))}
+          </div>
+
           <div style={{ fontSize: 13, color: C.memGlyph, lineHeight: 1.6 }}>
             <p style={{ margin: "0 0 8px" }}>
-              Tap a tile next to you to move or strike. Tap a far tile to walk there — you stop the moment
+              Tap a tile next to you to move or strike. Tap a far tile to walk there. You stop the moment
               something comes into the light.
+            </p>
+            <p style={{ margin: "0 0 8px" }}>
+              Every floor has two ways down. The red stair is perilous: tougher monsters, but more treasure, more relics and bonus points.
             </p>
             <p style={{ margin: "0 0 10px" }}>Progress saves after every move. You can close this and come back to the run.</p>
             <Backup onRestored={() => loadAll(false)} />
             <div>
               <button onClick={wipe} style={linkBtn}>Erase all progress</button>
             </div>
-            <p className="lb-mono" style={{ margin: "14px 0 0", fontSize: 11 }}>v{__APP_VERSION__}</p>
+            <p className="lb-mono" style={{ margin: "14px 0 0", fontSize: 11 }}>v{__APP_VERSION__} · rules {RULES_VERSION}</p>
           </div>
         </div>
       </Shell>
@@ -469,21 +582,27 @@ export default function LampblackDepths() {
   }
 
   if (screen === "death" && summary) {
+    const daily = summary.mode === "daily";
     return (
       <Shell>
         <div style={{ margin: "auto", padding: 26, maxWidth: 420, width: "100%", boxSizing: "border-box" }}>
-          <div className="lb-mono" style={{ color: C.blood, fontSize: 40, lineHeight: 1 }}>†</div>
-          <h2 style={{ fontSize: 27, fontWeight: 600, margin: "12px 0 2px" }}>The lamp goes out</h2>
+          <div className="lb-mono" style={{ color: summary.abandoned ? C.dim : C.blood, fontSize: 40, lineHeight: 1 }}>{summary.abandoned ? "·" : "†"}</div>
+          <h2 style={{ fontSize: 27, fontWeight: 600, margin: "12px 0 2px" }}>{summary.abandoned ? "You climb back out" : "The lamp goes out"}</h2>
           <p style={{ color: C.dim, margin: "0 0 22px", fontSize: 15 }}>
-            {summary.record ? "Deeper than you have ever been." : "The dark keeps what it takes."}
+            {daily
+              ? `${prettyDay(summary.day ?? today)} daily · ${summary.ranked ? "your first try, it's on the board" : "practice run"}`
+              : summary.record ? "Deeper than you have ever been." : "The dark keeps what it takes."}
           </p>
+          <Row k="score" v={summary.score} color={C.ember} />
           <Row k="reached" v={`depth ${summary.depth}`} />
           <Row k="killed" v={summary.kills} />
           <Row k="level" v={summary.level} />
           <Row k="echoes carried out" v={summary.earned} color={C.verd} />
           <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
-            <button className="lb-btn" onClick={startRun} style={btn(C.ember, true)}>Descend again</button>
-            <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.dim, false)}>Spend echoes</button>
+            {daily
+              ? <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.ember, true)}>See the scoreboard</button>
+              : <button className="lb-btn" onClick={startFree} style={btn(C.ember, true)}>Descend again</button>}
+            <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.dim, false)}>{daily ? "Main screen" : "Spend echoes"}</button>
           </div>
         </div>
       </Shell>
@@ -496,26 +615,34 @@ export default function LampblackDepths() {
       <Shell>
         <div style={{ margin: "auto", textAlign: "center", padding: 24 }}>
           <p style={{ color: C.dim, marginBottom: 14 }}>No run in progress.</p>
-          <button className="lb-btn" onClick={startRun} style={btn(C.ember, true)}>Descend</button>
+          <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.ember, true)}>Back</button>
         </div>
       </Shell>
     );
   }
 
-  const onStairs = g.grid[idx(g.p.x, g.p.y)] === STAIRS;
-  const potionCount = g.potions.reduce((a, b) => a + b, 0);
+  const tile = g.grid[idx(g.p.x, g.p.y)];
+  const onStairs = tile === STAIRS || tile === STAIRS_RISK;
   const hpPct = Math.max(0, g.hp / g.maxHp);
   const saveColor = saveState === "failed" ? C.blood : saveState === "saved" ? C.verd : C.memGlyph;
+  const potionCount = g.potions.reduce((a, b) => a + b, 0);
+  const ghostInfo = g.mode === "daily" ? ghostsFor(g.day).map(gh => {
+    const { frame, done, died } = ghostAt(gh, g.turns);
+    return { name: gh.rec.player.name || "friend", depth: parseInt(frame?.fk ?? "1", 10), here: frame?.fk === g.floorKey, fell: done && died };
+  }) : [];
 
   return (
     <Shell>
-      <div style={{ padding: "10px 14px 8px", display: "flex", alignItems: "center", gap: 12, borderBottom: `1px solid ${C.memWall}` }}>
-        <button className="lb-btn" onClick={() => { stopWalk(); persistRun(); setScreen("hub"); }} aria-label="back to camp"
-          style={{ background: "none", border: "none", color: C.dim, font: "inherit", fontSize: 24, padding: "0 8px 0 2px", cursor: "pointer" }}>‹</button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: C.dim, marginBottom: 3 }}>
+      <div style={{ padding: "10px 14px 8px", display: "flex", alignItems: "center", gap: 10, borderBottom: `1px solid ${C.memWall}` }}>
+        <button className="lb-btn" onClick={leaveToHub} aria-label="back to camp"
+          style={{ background: "none", border: "none", color: C.dim, font: "inherit", fontSize: 24, padding: "0 6px 0 2px", cursor: "pointer" }}>‹</button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: C.dim, marginBottom: 3, gap: 6 }}>
             <span className="lb-mono" style={{ color: hpPct < 0.3 ? C.blood : C.bone }}>{g.hp}/{g.maxHp}</span>
-            <span>depth {g.depth} · lvl {g.level} · {totalAtk(g)}atk {totalDef(g)}def</span>
+            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {g.mode === "daily" && <b style={{ color: C.ember, fontWeight: 600 }}>DAILY · </b>}
+              d{g.depth}{g.floorKey.endsWith("r") ? "☠" : ""} · lvl {g.level} · {totalAtk(g)}atk {totalDef(g)}def
+            </span>
           </div>
           <div style={{ height: 4, background: C.memWall, borderRadius: 2, overflow: "hidden" }}>
             <div style={{ width: `${hpPct * 100}%`, height: "100%", background: hpPct < 0.3 ? C.blood : C.ember, transition: "width 160ms" }} />
@@ -528,10 +655,18 @@ export default function LampblackDepths() {
             <span className="lb-mono" style={{ fontSize: 13 }}>{g.inv.key}</span>
           </span>
         )}
-        <span className="lb-mono" style={{ color: C.verd, fontSize: 13 }}>{g.echoes}</span>
+        <span className="lb-mono" style={{ color: C.verd, fontSize: 13 }}>{g.mode === "daily" ? scoreOf(g) : g.echoes}</span>
         <span aria-label={saveState === "failed" ? "not saving" : "saved"}
-          style={{ display: "block", width: 8, height: 8, borderRadius: 4, background: saveColor }} />
+          style={{ display: "block", width: 8, height: 8, borderRadius: 4, background: saveColor, flexShrink: 0 }} />
       </div>
+
+      <RelicStrip g={g} open={relicsOpen} onToggle={() => setRelicsOpen(o => !o)} />
+
+      {ghostInfo.length > 0 && (
+        <div style={{ padding: "4px 14px", fontSize: 12.5, color: "#6FC4C8", borderBottom: `1px solid ${C.memWall}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {ghostInfo.map(i => `${i.name} ${i.fell ? "fell on" : i.here ? "is here ·" : "is on"} depth ${i.depth}`).join("  ·  ")}
+        </div>
+      )}
 
       {saveState === "failed" && (
         <div style={{ background: "#2A100C", color: C.blood, fontSize: 12.5, padding: "6px 14px", lineHeight: 1.4 }}>
@@ -554,55 +689,18 @@ export default function LampblackDepths() {
 
       <div style={{ display: "flex", gap: 6, padding: "8px 10px 14px", borderTop: tray ? "none" : `1px solid ${C.memWall}` }}>
         {onStairs
-          ? <button className="lb-btn" onClick={takeStairs} style={{ ...act3(C.ember), flex: 1.4, color: C.void, background: C.ember, border: `1px solid ${C.ember}` }}>Go down</button>
-          : <button className="lb-btn" onClick={() => act(gg => say(gg, "You wait."))} style={{ ...act3(C.dim), flex: 1.4 }}>Wait</button>}
-        <ActBtn label="Tonic" n={g.inv.tonic} onClick={onTonic} sprite="tonic" />
+          ? <button className="lb-btn" onClick={() => doAction("d")}
+              style={{ ...act3(tile === STAIRS_RISK ? "#FFF4E8" : C.void), flex: 1.4, background: tile === STAIRS_RISK ? C.blood : C.ember, border: `1px solid ${tile === STAIRS_RISK ? C.blood : C.ember}`,
+                       display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.1 }}>
+              Go down
+              {tile === STAIRS_RISK && <span style={{ fontSize: 10.5, fontWeight: 600 }}>perilous</span>}
+            </button>
+          : <button className="lb-btn" onClick={() => doAction("w")} style={{ ...act3(C.dim), flex: 1.4 }}>Wait</button>}
+        <ActBtn label="Tonic" n={g.inv.tonic} onClick={() => doAction("t")} sprite="tonic" />
         <ActBtn label="Potions" n={potionCount} onClick={() => setTray(t => !t)} sprite="potion" active={tray} />
-        <ActBtn label="Ember" n={g.inv.ember} onClick={onEmber} sprite="ember" />
-        <ActBtn label="Waystone" n={g.inv.waystone} onClick={onWaystone} sprite="waystone" />
+        <ActBtn label="Ember" n={g.inv.ember} onClick={() => doAction("e")} sprite="ember" />
+        <ActBtn label="Waystone" n={g.inv.waystone} onClick={() => doAction("y")} sprite="waystone" />
       </div>
     </Shell>
-  );
-}
-
-/* ============================ small pieces ============================ */
-
-const linkBtn: CSSProperties = {
-  background: "none", border: "none", color: C.memGlyph, textDecoration: "underline",
-  padding: "4px 0", font: "inherit", cursor: "pointer",
-};
-
-function btn(color: string, primary: boolean): CSSProperties {
-  return {
-    font: "inherit", flex: 1, padding: "13px 14px", fontSize: 16, fontWeight: 600,
-    borderRadius: 3, cursor: "pointer",
-    background: primary ? color : "transparent",
-    color: primary ? "#0A0C10" : color,
-    border: `1px solid ${color}`,
-  };
-}
-
-function act3(color: string): CSSProperties {
-  return {
-    font: "inherit", padding: "10px 6px", background: "transparent", border: "1px solid #1E252F",
-    color, borderRadius: 3, fontSize: 14, fontWeight: 600, cursor: "pointer",
-  };
-}
-
-function Stat({ label, value, color }: { label: string; value: ReactNode; color?: string }) {
-  return (
-    <div>
-      <div className="lb-mono" style={{ fontSize: 20, color: color || "#E6DCC9" }}>{value}</div>
-      <div style={{ fontSize: 12, color: "#7C8794" }}>{label}</div>
-    </div>
-  );
-}
-
-function Row({ k, v, color }: { k: string; v: ReactNode; color?: string }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #161B23", fontSize: 15 }}>
-      <span style={{ color: "#7C8794" }}>{k}</span>
-      <span className="lb-mono" style={{ color: color || "#E6DCC9" }}>{v}</span>
-    </div>
   );
 }
