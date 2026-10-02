@@ -1,4 +1,7 @@
-import { C, VW, VH, WALL, STAIRS, idx, inB, type Game } from "./core";
+import {
+  C, VW, VH, WALL, STAIRS, VARIANTS, POTION_COLORS, idx, inB, weaponTier, armorTier,
+  type Game, type Mon, type Item,
+} from "./core";
 
 /* ============================ sprites ============================ */
 /* 8x8 pixel art. '.' is transparent; other chars index the sprite's palette. */
@@ -201,14 +204,149 @@ export const SPRITES: Record<string, SpriteDef> = {
       "bbbbbbba",
     ],
   },
+  slime: {
+    pal: { g:"#6FAF5A", l:"#A6DB8C", d:"#3F6E35", k:"#0E1117" },
+    rows: [
+      "........",
+      "........",
+      "...gg...",
+      "..glgg..",
+      ".gkggkg.",
+      ".gggggg.",
+      "dggggggd",
+      ".dddddd.",
+    ],
+  },
+  archer: {
+    pal: { g:"#5E7A46", d:"#43592F", k:"#0E1117", h:"#4A3524", w:"#A87440", s:"#D8D2BE" },
+    rows: [
+      "..hhh.w.",
+      ".hhhhhsw",
+      ".gkggksw",
+      ".gggggsw",
+      "..ddddsw",
+      ".dddddsw",
+      ".g..g.w.",
+      ".d..d...",
+    ],
+  },
+  ghost: {
+    pal: { w:"#DCE4EE", d:"#9AA8BA", k:"#12161E" },
+    rows: [
+      "..wwww..",
+      ".wwwwww.",
+      ".wkwwkw.",
+      ".wwwwww.",
+      ".wwkkww.",
+      ".wwwwww.",
+      ".dwwwwd.",
+      ".w.ww.w.",
+    ],
+  },
+  mimic: {
+    pal: { b:"#7A5138", d:"#4A3524", g:"#D4C36A", t:"#E6DCC9", r:"#C04A3B", k:"#0E1117" },
+    rows: [
+      ".dddddd.",
+      "dbkbbkbd",
+      "dttttttd",
+      "dkkrrkkd",
+      "dkrrrrkd",
+      "dttttttd",
+      "dbbgbbbd",
+      ".dddddd.",
+    ],
+  },
+  chest: {
+    pal: { b:"#7A5138", d:"#4A3524", g:"#D4C36A", k:"#2C2016" },
+    rows: [
+      "........",
+      ".dddddd.",
+      "dbbbbbbd",
+      "dbbbbbbd",
+      "ddddgddd",
+      "dbbbgbbd",
+      "dbbbbbbd",
+      ".dddddd.",
+    ],
+  },
+  key: {
+    pal: { g:"#F2D06B", d:"#B08A2E" },
+    rows: [
+      "........",
+      ".gg.....",
+      "g..g....",
+      "g..ggggd",
+      ".gg..g.g",
+      ".....d..",
+      "........",
+      "........",
+    ],
+  },
+  potion: {
+    pal: { c:"#8C7A5A", g:"#8FA3B0", r:"#9A5AA8", l:"#E6DCC9" },
+    rows: [
+      "...cc...",
+      "...gg...",
+      "...gg...",
+      "..grrg..",
+      ".grlrrg.",
+      ".grrrrg.",
+      "..grrg..",
+      "...gg...",
+    ],
+  },
+  spikes: {
+    pal: { s:"#C9CFD6", d:"#6B7A85" },
+    rows: [
+      "........",
+      "..s...s.",
+      ".sds.sds",
+      "........",
+      "s...s...",
+      "ds.sds..",
+      "........",
+      "........",
+    ],
+  },
+  pit: {
+    pal: { k:"#05070A", d:"#2C2016" },
+    rows: [
+      "........",
+      "..dddd..",
+      ".dkkkkd.",
+      "dkkkkkkd",
+      "dkkkkkkd",
+      ".dkkkkd.",
+      "..dddd..",
+      "........",
+    ],
+  },
+  alarm: {
+    pal: { g:"#D4C36A", d:"#8C7A3A", k:"#3B2A1B" },
+    rows: [
+      "...dd...",
+      "..gggg..",
+      "..gggg..",
+      ".gggggg.",
+      ".gggggg.",
+      "dddddddd",
+      "...kk...",
+      "........",
+    ],
+  },
 };
 
-const spriteCache = new Map<string, HTMLCanvasElement>();
+/* ============================ layered looks ============================ */
+/* A look is a base sprite plus palette swaps (armor colors, monster skins) and
+   extra pixels painted on top (a weapon in hand, armor on the torso). */
 
-export function spriteCanvas(name: string): HTMLCanvasElement | null {
-  const hit = spriteCache.get(name);
+type Px = [number, number, string];
+const cache = new Map<string, HTMLCanvasElement>();
+
+function compose(key: string, base: string, pal: Record<string, string> = {}, px: Px[] = []): HTMLCanvasElement | null {
+  const hit = cache.get(key);
   if (hit) return hit;
-  const def = SPRITES[name];
+  const def = SPRITES[base];
   if (!def) return null;
   const cv = document.createElement("canvas");
   cv.width = 8; cv.height = 8;
@@ -218,27 +356,123 @@ export function spriteCanvas(name: string): HTMLCanvasElement | null {
     for (let x = 0; x < 8; x++) {
       const ch = row[x];
       if (!ch || ch === ".") continue;
-      const col = def.pal[ch];
-      if (!col) continue;
-      cx.fillStyle = col;
+      const c = pal[ch] ?? def.pal[ch];
+      if (!c) continue;
+      cx.fillStyle = c;
       cx.fillRect(x, y, 1, 1);
     }
   }
-  spriteCache.set(name, cv);
+  for (const [x, y, c] of px) { cx.fillStyle = c; cx.fillRect(x, y, 1, 1); }
+  cache.set(key, cv);
   return cv;
 }
 
+export function spriteCanvas(name: string) { return compose(name, name); }
+
+/* Weapons held in the left hand (column 0), one look per tier in WEAPONS. */
+const column = (x: number, y0: number, y1: number, c: string): Px[] =>
+  Array.from({ length: y1 - y0 + 1 }, (_, i) => [x, y0 + i, c] as Px);
+const WEAPON_PX: Px[][] = [
+  // rusted knife
+  [...column(0, 4, 5, "#9C8068"), [0, 6, "#5C3B28"]],
+  // iron sword
+  [[0, 1, "#E8ECF0"], ...column(0, 2, 4, "#C9CFD6"), [0, 5, "#8C8478"], [1, 5, "#8C8478"], [0, 6, "#5C3B28"]],
+  // hooked spear
+  [[0, 0, "#E8ECF0"], [1, 1, "#C9CFD6"], ...column(0, 1, 7, "#8B5A2B")],
+  // runed blade
+  [[0, 0, "#CFF8F6"], [0, 1, "#6FC4C8"], [0, 2, "#A6EAE6"], [0, 3, "#6FC4C8"], [0, 4, "#A6EAE6"],
+   [0, 5, "#D4C36A"], [1, 5, "#D4C36A"], [0, 6, "#3A2A20"]],
+  // kingsbane
+  [[0, 0, "#FFF4C2"], ...column(0, 1, 4, "#F2D06B"), [0, 5, "#C04A3B"], [1, 5, "#C04A3B"], [0, 6, "#5C3B28"]],
+  // the long quiet
+  [[0, 0, "#FFFFFF"], ...column(0, 1, 4, "#CFC8F0"), [1, 1, "#9A5AA8"], [1, 3, "#9A5AA8"],
+   [0, 5, "#9A5AA8"], [1, 5, "#9A5AA8"], [0, 6, "#12161E"]],
+];
+/* the same weapons lying on the floor */
+const WEAPON_ITEM_PAL: Record<string, string>[] = [
+  { s:"#9C8068", d:"#6E5A48", g:"#8C8478" },
+  { s:"#C9CFD6", d:"#7E858F", g:"#D4C36A" },
+  { s:"#AEB5BE", d:"#8B5A2B", g:"#8B5A2B" },
+  { s:"#A6EAE6", d:"#3A7E86", g:"#D4C36A" },
+  { s:"#F2D06B", d:"#B08A2E", g:"#C04A3B" },
+  { s:"#CFC8F0", d:"#6E5A9A", g:"#9A5AA8" },
+];
+
+/* main / dark / light colors per tier in ARMORS */
+const ARMOR_COLORS = [
+  { main:"#6E5E4A", dark:"#4A3F33", light:"#8A7860" }, // padded rags
+  { main:"#8B5A2B", dark:"#5E3B1C", light:"#A87440" }, // boiled leather
+  { main:"#A3ACB6", dark:"#6A737D", light:"#D6DCE2" }, // chain shirt
+  { main:"#7E62A6", dark:"#4E3A6E", light:"#F2D06B" }, // warden plate
+  { main:"#56616E", dark:"#2E363F", light:"#6FC4C8" }, // grave-iron
+];
+
+/* the torso pixels armor covers on monsters that can wear it */
+const TORSO: Record<string, [number, number][]> = {
+  goblin:   [[2,4],[3,4],[4,4],[5,4],[2,5],[3,5],[4,5],[5,5]],
+  archer:   [[2,4],[3,4],[4,4],[5,4],[1,5],[2,5],[3,5],[4,5],[5,5]],
+  skeleton: [[1,4],[2,4],[3,4],[4,4],[5,4],[6,4],[3,5],[4,5]],
+  ogre:     [[1,5],[2,5],[3,5],[4,5],[5,5],[6,5]],
+};
+
+export function playerSprite(g: Pick<Game, "weapon" | "armor">) {
+  const wt = g.weapon ? weaponTier(g.weapon.name) : -1;
+  const at = g.armor ? armorTier(g.armor.name) : -1;
+  let pal: Record<string, string> = {};
+  if (at >= 0) {
+    const a = ARMOR_COLORS[at];
+    pal = { d: a.main, c: a.dark };
+    // the heavy armors come with a full helm and glowing eye slits
+    if (at >= 3) { pal.f = a.main; pal.k = a.light; }
+  }
+  return compose(`player|${wt}|${at}`, "player", pal, wt >= 0 ? WEAPON_PX[wt] : []);
+}
+
+export function monSprite(m: Mon) {
+  if (m.disguised) return spriteCanvas("chest");
+  const pal = m.variant > 0 ? VARIANTS[m.kind]?.[m.variant - 1]?.pal ?? {} : {};
+  const px: Px[] = [];
+  if (m.arm >= 0) for (const [x, y] of TORSO[m.kind] ?? []) px.push([x, y, ARMOR_COLORS[m.arm].main]);
+  if (m.wpn >= 0) px.push(...WEAPON_PX[m.wpn]);
+  return compose(`${m.kind}|${m.variant}|${m.wpn}|${m.arm}`, m.kind, pal, px);
+}
+
+export function potionSprite(color: number) {
+  return compose(`potion|${color}`, "potion", { r: POTION_COLORS[color]?.hex ?? "#9A5AA8" });
+}
+
+export function itemSprite(it: Item) {
+  if (it.t === "weapon") {
+    const t = weaponTier(it.name);
+    return compose(`weapon|${t}`, "weapon", WEAPON_ITEM_PAL[t] ?? {});
+  }
+  if (it.t === "armor") {
+    const a = ARMOR_COLORS[armorTier(it.name)];
+    return compose(`armor|${it.name}`, "armor", a ? { m: a.main, l: a.light, d: a.dark } : {});
+  }
+  if (it.t === "potion") return potionSprite(it.color ?? 0);
+  if (it.t === "chest" && it.locked) return compose("chest|locked", "chest", { g: "#C9CFD6", d: "#3A3F48" });
+  return spriteCanvas(it.t);
+}
+
+/* ============================ map ============================ */
+
 const hash32 = (n: number) => { let h = (n * 2654435761) % 4294967296; return (h ^ (h >>> 13)) >>> 0; };
+
+const FLASH_COLORS: Record<string, string> = {
+  hurt: "rgba(160,30,20,0.55)",
+  hit: "rgba(220,80,60,0.5)",
+  arrow: "rgba(233,161,59,0.35)",
+};
 
 export function drawMap(
   ctx: CanvasRenderingContext2D, g: Game, ts: number, camX: number, camY: number,
   flashes: Record<number, string>,
 ) {
   ctx.imageSmoothingEnabled = false;
-  const blit = (name: string, px: number, py: number, alpha?: number) => {
-    const cv = spriteCanvas(name);
+  const blit = (cv: HTMLCanvasElement | null, px: number, py: number, alpha = 1) => {
     if (!cv) return;
-    if (alpha != null) ctx.globalAlpha = alpha;
+    ctx.globalAlpha = alpha;
     ctx.drawImage(cv, 0, 0, 8, 8, Math.round(px), Math.round(py), ts, ts);
     ctx.globalAlpha = 1;
   };
@@ -270,21 +504,23 @@ export function drawMap(
         ctx.fillRect(px + ts * 0.3, py + ts * 0.55, ts * 0.22, ts * 0.1);
       }
 
-      if (g.grid[i] === STAIRS) blit("stairs", px, py, vis ? 1 : 0.4);
+      if (g.grid[i] === STAIRS) blit(spriteCanvas("stairs"), px, py, vis ? 1 : 0.4);
+
+      const tr = g.traps.find(o => o.found && o.x === x && o.y === y);
+      if (tr) blit(spriteCanvas(tr.t), px, py, vis ? 1 : 0.4);
 
       const it = g.items.find(o => o.x === x && o.y === y);
-      if (it) blit(it.t, px, py, vis ? 1 : 0.35);
+      if (it) blit(itemSprite(it), px, py, vis ? 1 : 0.35);
 
-      if (vis) {
-        const m = g.mons.find(o => o.x === x && o.y === y);
-        if (m) blit(m.kind, px, py, 1);
-      }
+      const m = g.mons.find(o => o.x === x && o.y === y);
+      if (m && m.disguised) blit(monSprite(m), px, py, vis ? 1 : 0.35); // a mimic is remembered like a chest
+      else if (m && vis) blit(monSprite(m), px, py);
 
-      if (x === g.p.x && y === g.p.y) blit("player", px, py, 1);
+      if (x === g.p.x && y === g.p.y) blit(playerSprite(g), px, py, g.hidden > 0 ? 0.45 : 1);
 
       const fl = flashes[i];
       if (fl) {
-        ctx.fillStyle = fl === "hurt" ? "rgba(160,30,20,0.55)" : "rgba(220,80,60,0.5)";
+        ctx.fillStyle = FLASH_COLORS[fl] ?? FLASH_COLORS.hit;
         ctx.fillRect(px, py, ts, ts);
       }
     }

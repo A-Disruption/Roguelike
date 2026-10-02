@@ -1,13 +1,14 @@
 {
   "name": "lampblack-depths",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "icons": "node scripts/make-icons.mjs"
+    "icons": "node scripts/make-icons.mjs",
+    "test": "node scripts/simulate.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

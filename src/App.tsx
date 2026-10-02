@@ -1,10 +1,11 @@
 import { useEffect, useRef, useReducer, useState, useCallback, type ReactNode, type CSSProperties, type MouseEvent } from "react";
 import {
-  C, MW, MH, VW, VH, STAIRS, WALL, UPGRADES, idx, inB, say, totalAtk, totalDef, newRun, descend,
-  playerAttack, monsterTurn, pickUp, bfsPath, computeFov, drinkTonic, burnEmber, castWaystone,
+  C, MW, MH, VW, VH, STAIRS, WALL, UPGRADES, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
+  newRun, descend, playerAttack, endTurn, enterTile, revealMimic, bfsPath, drinkTonic, drinkPotion,
+  burnEmber, castWaystone, potionLabel,
   type Game, type Meta, type Upgrade, type Flash,
 } from "./game/core";
-import { drawMap, spriteCanvas } from "./game/sprites";
+import { drawMap, spriteCanvas, playerSprite, potionSprite } from "./game/sprites";
 import {
   loadMeta, saveMeta, loadRun, saveRun, clearRun, requestPersist, isStandalone, isIOS,
   exportCode, importCode,
@@ -36,11 +37,12 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-function ActBtn({ label, n, onClick, sprite }: { label: string; n: number; onClick: () => void; sprite: string }) {
+function ActBtn({ label, n, onClick, sprite, active }: { label: string; n: number; onClick: () => void; sprite: string; active?: boolean }) {
   const off = n <= 0;
   return (
     <button className="lb-btn" disabled={off} onClick={onClick}
-      style={{ ...act3(off ? C.memGlyph : C.bone), flex: 1, opacity: off ? 0.35 : 1,
+      style={{ ...act3(off ? C.memGlyph : C.bone), flex: 1, opacity: off ? 0.35 : 1, minWidth: 0,
+               ...(active ? { border: `1px solid ${C.ember}` } : {}),
                display: "flex", flexDirection: "column", gap: 2, alignItems: "center" }}>
       <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <SpriteIcon name={sprite} size={16} />
@@ -51,7 +53,7 @@ function ActBtn({ label, n, onClick, sprite }: { label: string; n: number; onCli
   );
 }
 
-function SpriteIcon({ name, size = 16 }: { name: string; size?: number }) {
+function SpriteIcon({ name, src: given, size = 16 }: { name?: string; src?: HTMLCanvasElement | null; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
@@ -60,10 +62,40 @@ function SpriteIcon({ name, size = 16 }: { name: string; size?: number }) {
     cv.width = size * dpr; cv.height = size * dpr;
     const cx = cv.getContext("2d")!;
     cx.imageSmoothingEnabled = false;
-    const src = spriteCanvas(name);
+    cx.clearRect(0, 0, cv.width, cv.height);
+    const src = given ?? (name ? spriteCanvas(name) : null);
     if (src) cx.drawImage(src, 0, 0, 8, 8, 0, 0, size * dpr, size * dpr);
-  }, [name, size]);
+  }, [name, given, size]);
   return <canvas ref={ref} className="lb-map" style={{ width: size, height: size, display: "block" }} />;
+}
+
+/* ============================ potion tray ============================ */
+
+function PotionTray({ g, onDrink, onClose }: { g: Game; onDrink: (color: number) => void; onClose: () => void }) {
+  const held = POTION_COLORS.map((_, c) => c).filter(c => g.potions[c] > 0);
+  return (
+    <div style={{ borderTop: `1px solid ${C.memWall}`, padding: "8px 12px 0", display: "flex", flexDirection: "column", gap: 6 }}>
+      {held.length === 0 && <div style={{ fontSize: 13.5, color: C.dim }}>No potions yet. Look for colored bottles.</div>}
+      {held.map(c => {
+        const eff = g.potionMap[c];
+        const known = g.known[eff];
+        return (
+          <button key={c} className="lb-btn" onClick={() => onDrink(c)}
+            style={{ ...act3(C.bone), display: "flex", alignItems: "center", gap: 10, textAlign: "left", padding: "8px 10px" }}>
+            <SpriteIcon src={potionSprite(c)} size={22} />
+            <span style={{ flex: 1 }}>
+              <span style={{ display: "block", fontSize: 14.5 }}>{potionLabel(g, c)}</span>
+              <span style={{ display: "block", fontSize: 12, color: C.dim, fontWeight: 400 }}>
+                {known ? POTION_EFFECTS[eff].blurb : "unknown. Drink it to find out!"}
+              </span>
+            </span>
+            <span className="lb-mono" style={{ fontSize: 13, color: C.dim }}>×{g.potions[c]}</span>
+          </button>
+        );
+      })}
+      <button onClick={onClose} style={{ ...linkBtn, alignSelf: "flex-start" }}>Close</button>
+    </div>
+  );
 }
 
 /* ============================ backup panel ============================ */
@@ -137,6 +169,7 @@ export default function LampblackDepths() {
   const [summary, setSummary] = useState<{ depth: number; kills: number; earned: number; level: number; record: boolean } | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [installed] = useState(isStandalone);
+  const [tray, setTray] = useState(false);
   const mapBox = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const walkTimer = useRef<number | undefined>(undefined);
@@ -235,9 +268,7 @@ export default function LampblackDepths() {
     if (!g || g.dead) return;
     fn(g);
     if (g.dead) { force(); setTimeout(finishRun, 550); return; }
-    monsterTurn(g, flash);
-    g.turns += 1;
-    g.vis = computeFov(g);
+    endTurn(g, flash);
     if (g.dead) { force(); setTimeout(finishRun, 550); return; }
     persistRun();
     force();
@@ -245,10 +276,13 @@ export default function LampblackDepths() {
 
   const tryStep = useCallback((tx: number, ty: number) => {
     const g = G.current!;
-    if (!inB(tx, ty) || g.grid[idx(tx, ty)] === WALL) return false;
+    if (!inB(tx, ty)) return false;
+    // check monsters before walls: ghosts can hang inside walls and still be hit
     const m = g.mons.find(o => o.x === tx && o.y === ty);
+    if (m?.disguised) { g.path = null; act(gg => revealMimic(gg, m)); return true; }
     if (m) { act(gg => playerAttack(gg, m, flash)); return true; }
-    act(gg => { gg.p = { x: tx, y: ty }; pickUp(gg); });
+    if (g.grid[idx(tx, ty)] === WALL) return false;
+    act(gg => { gg.p = { x: tx, y: ty }; enterTile(gg, flash); });
     return true;
   }, [act, flash]);
 
@@ -258,7 +292,7 @@ export default function LampblackDepths() {
   }
   const stopWalk = useCallback(stopWalkRaw, []);
 
-  const enemyInSight = (g: Game) => g.mons.some(m => g.vis.has(idx(m.x, m.y)));
+  const enemyInSight = (g: Game) => g.mons.some(m => !m.disguised && g.vis.has(idx(m.x, m.y)));
 
   const stepWalk = useCallback(() => {
     const g = G.current;
@@ -293,7 +327,8 @@ export default function LampblackDepths() {
 
   const onTonic = () => act(drinkTonic);
   const onEmber = () => act(g => burnEmber(g, flash));
-  const onWaystone = () => act(castWaystone);
+  const onWaystone = () => act(g => castWaystone(g, flash));
+  const onPotion = (c: number) => { setTray(false); act(g => drinkPotion(g, c)); };
 
   const takeStairs = () => {
     const g = G.current!;
@@ -408,6 +443,7 @@ export default function LampblackDepths() {
           <h2 style={{ fontSize: 13, fontWeight: 600, color: C.dim, margin: "22px 0 8px", letterSpacing: "0.04em" }}>What you will meet</h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginBottom: 20 }}>
             {[["rat","cellar rat"],["bat","blind bat"],["goblin","goblin"],["skeleton","skeleton"],
+              ["slime","slime"],["archer","goblin archer"],["ghost","ghost"],
               ["wraith","wraith"],["ogre","ogre"],["warden","warden"]].map(([k, n]) => (
               <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.dim }}>
                 <SpriteIcon name={k} size={20} /> {n}
@@ -425,6 +461,7 @@ export default function LampblackDepths() {
             <div>
               <button onClick={wipe} style={linkBtn}>Erase all progress</button>
             </div>
+            <p className="lb-mono" style={{ margin: "14px 0 0", fontSize: 11 }}>v{__APP_VERSION__}</p>
           </div>
         </div>
       </Shell>
@@ -466,6 +503,7 @@ export default function LampblackDepths() {
   }
 
   const onStairs = g.grid[idx(g.p.x, g.p.y)] === STAIRS;
+  const potionCount = g.potions.reduce((a, b) => a + b, 0);
   const hpPct = Math.max(0, g.hp / g.maxHp);
   const saveColor = saveState === "failed" ? C.blood : saveState === "saved" ? C.verd : C.memGlyph;
 
@@ -483,6 +521,13 @@ export default function LampblackDepths() {
             <div style={{ width: `${hpPct * 100}%`, height: "100%", background: hpPct < 0.3 ? C.blood : C.ember, transition: "width 160ms" }} />
           </div>
         </div>
+        <SpriteIcon src={playerSprite(g)} size={24} />
+        {g.inv.key > 0 && (
+          <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <SpriteIcon name="key" size={16} />
+            <span className="lb-mono" style={{ fontSize: 13 }}>{g.inv.key}</span>
+          </span>
+        )}
         <span className="lb-mono" style={{ color: C.verd, fontSize: 13 }}>{g.echoes}</span>
         <span aria-label={saveState === "failed" ? "not saving" : "saved"}
           style={{ display: "block", width: 8, height: 8, borderRadius: 4, background: saveColor }} />
@@ -505,11 +550,14 @@ export default function LampblackDepths() {
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 8, padding: "8px 12px 14px", borderTop: `1px solid ${C.memWall}` }}>
+      {tray && <PotionTray g={g} onDrink={onPotion} onClose={() => setTray(false)} />}
+
+      <div style={{ display: "flex", gap: 6, padding: "8px 10px 14px", borderTop: tray ? "none" : `1px solid ${C.memWall}` }}>
         {onStairs
-          ? <button className="lb-btn" onClick={takeStairs} style={{ ...act3(C.ember), flex: 2, color: C.void, background: C.ember, borderColor: C.ember }}>Go down</button>
-          : <button className="lb-btn" onClick={() => act(gg => say(gg, "You wait."))} style={{ ...act3(C.dim), flex: 2 }}>Wait</button>}
+          ? <button className="lb-btn" onClick={takeStairs} style={{ ...act3(C.ember), flex: 1.4, color: C.void, background: C.ember, border: `1px solid ${C.ember}` }}>Go down</button>
+          : <button className="lb-btn" onClick={() => act(gg => say(gg, "You wait."))} style={{ ...act3(C.dim), flex: 1.4 }}>Wait</button>}
         <ActBtn label="Tonic" n={g.inv.tonic} onClick={onTonic} sprite="tonic" />
+        <ActBtn label="Potions" n={potionCount} onClick={() => setTray(t => !t)} sprite="potion" active={tray} />
         <ActBtn label="Ember" n={g.inv.ember} onClick={onEmber} sprite="ember" />
         <ActBtn label="Waystone" n={g.inv.waystone} onClick={onWaystone} sprite="waystone" />
       </div>

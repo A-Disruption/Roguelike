@@ -14,6 +14,9 @@ on the device after every move, and it works offline.
 | `src/game/storage.ts` | Saving to the device, backup codes |
 | `src/App.tsx` | Screens and controls |
 | `scripts/make-icons.mjs` | Builds the home-screen icons from the hero sprite (`npm run icons`) |
+| `scripts/simulate.ts` | Plays hundreds of random runs to catch crashes and save bugs (`npm test`) |
+| `tools/gallery.html` | Every sprite, gear combo and monster variant on one page (`npm run dev`, then open `/tools/gallery.html`) |
+| `ROADMAP.md` | What's done and what's next |
 
 ## Working on it
 
@@ -21,6 +24,7 @@ on the device after every move, and it works offline.
 npm install
 npm run dev        # http://localhost:5173, also on your LAN for quick looks
 npm run build      # type-check + production build into dist/
+npm test           # headless random-play smoke test
 ```
 
 ## Putting it on the phone (one-time setup)

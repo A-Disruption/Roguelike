@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "C:/GamesWithAI/Roguelike_1", "run", "preview", "--", "--port", "4173", "--strictPort"],
       "port": 4173
+    },
+    {
+      "name": "lampblack-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:/GamesWithAI/Roguelike_1", "run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173
     }
   ]
 }

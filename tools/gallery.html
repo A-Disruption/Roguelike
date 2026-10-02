@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sprite Gallery</title>
+  <style>
+    body { background:#080A0E; color:#E6DCC9; font:14px ui-sans-serif, system-ui, sans-serif; margin:16px; }
+    h2 { font-size:13px; color:#7C8794; margin:22px 0 8px; letter-spacing:.04em; }
+    .row { display:flex; flex-wrap:wrap; gap:10px; }
+    figure { margin:0; width:76px; text-align:center; }
+    canvas { width:64px; height:64px; image-rendering:pixelated; background:#241B13; display:block; margin:0 auto 4px; }
+    figcaption { font-size:11px; color:#7C8794; line-height:1.25; }
+  </style>
+</head>
+<body>
+  <p>Dev-only page (served by <code>npm run dev</code> at <code>/tools/gallery.html</code>). Not part of the app build.</p>
+  <div id="out"></div>
+  <script type="module">
+    import { playerSprite, monSprite, itemSprite, potionSprite, spriteCanvas } from "/src/game/sprites.ts";
+    import { WEAPONS, ARMORS, VARIANTS, POTION_COLORS } from "/src/game/core.ts";
+
+    const out = document.getElementById("out");
+    function section(title, entries) {
+      const h = document.createElement("h2"); h.textContent = title; out.append(h);
+      const row = document.createElement("div"); row.className = "row"; out.append(row);
+      for (const [label, src] of entries) {
+        const f = document.createElement("figure");
+        const cv = document.createElement("canvas"); cv.width = 64; cv.height = 64;
+        const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false;
+        if (src) cx.drawImage(src, 0, 0, 8, 8, 0, 0, 64, 64);
+        const c = document.createElement("figcaption"); c.textContent = label;
+        f.append(cv, c); row.append(f);
+      }
+    }
+    const mon = (kind, variant = 0, wpn = -1, arm = -1) => monSprite({ kind, variant, wpn, arm, disguised: false });
+
+    section("Hero: weapons", [["bare", playerSprite({ weapon: null, armor: null })],
+      ...WEAPONS.map(w => [w.name, playerSprite({ weapon: w, armor: null })])]);
+    section("Hero: armor", ARMORS.map(a => [a.name, playerSprite({ weapon: null, armor: a })]));
+    section("Hero: kitted out", [
+      ["sword + leather", playerSprite({ weapon: WEAPONS[1], armor: ARMORS[1] })],
+      ["spear + chain", playerSprite({ weapon: WEAPONS[2], armor: ARMORS[2] })],
+      ["runed + plate", playerSprite({ weapon: WEAPONS[3], armor: ARMORS[3] })],
+      ["kingsbane + grave-iron", playerSprite({ weapon: WEAPONS[4], armor: ARMORS[4] })],
+      ["long quiet + grave-iron", playerSprite({ weapon: WEAPONS[5], armor: ARMORS[4] })],
+    ]);
+    const kinds = ["rat","bat","goblin","slime","archer","skeleton","ghost","wraith","ogre","warden","mimic"];
+    section("Monsters", kinds.map(k => [k, mon(k)]));
+    section("Color variants", Object.entries(VARIANTS).flatMap(([k, vs]) => vs.map((v, i) => [`${v.prefix} ${k}`, mon(k, i + 1)])));
+    section("Monsters with gear", [
+      ["goblin, knife", mon("goblin", 0, 0)], ["goblin, sword+rags", mon("goblin", 0, 1, 0)],
+      ["cave goblin, spear+leather", mon("goblin", 1, 2, 1)], ["archer, leather", mon("archer", 0, -1, 1)],
+      ["skeleton, sword+chain", mon("skeleton", 0, 1, 2)], ["burnt skel., runed+plate", mon("skeleton", 1, 3, 3)],
+      ["ogre, spear", mon("ogre", 0, 2)], ["moss ogre, kingsbane+iron", mon("ogre", 1, 4, 4)],
+    ]);
+    section("Floor items", [
+      ...WEAPONS.map(w => [w.name, itemSprite({ t: "weapon", name: w.name })]),
+      ...ARMORS.map(a => [a.name, itemSprite({ t: "armor", name: a.name })]),
+      ...POTION_COLORS.map((p, i) => [`${p.name} potion`, potionSprite(i)]),
+      ["tonic", spriteCanvas("tonic")], ["chest", itemSprite({ t: "chest" })], ["locked chest", itemSprite({ t: "chest", locked: true })],
+      ["key", spriteCanvas("key")], ["ember", spriteCanvas("ember")], ["waystone", spriteCanvas("waystone")], ["echoes", spriteCanvas("echoes")],
+    ]);
+    section("Traps", [["spikes", spriteCanvas("spikes")], ["pit", spriteCanvas("pit")], ["alarm", spriteCanvas("alarm")], ["stairs", spriteCanvas("stairs")]]);
+  </script>
+</body>
+</html>
