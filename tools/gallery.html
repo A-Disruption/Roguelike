@@ -19,6 +19,7 @@
   <script type="module">
     import { playerSprite, monSprite, itemSprite, potionSprite, spriteCanvas, relicSprite, ghostSprite } from "/src/game/sprites.ts";
     import { RELIC_IDS, RELICS } from "/src/game/relics.ts";
+    import { CLASS_IDS, CLASSES } from "/src/game/classes.ts";
     import { WEAPONS, ARMORS, VARIANTS, POTION_COLORS } from "/src/game/core.ts";
 
     const out = document.getElementById("out");
@@ -36,6 +37,7 @@
     }
     const mon = (kind, variant = 0, wpn = -1, arm = -1) => monSprite({ kind, variant, wpn, arm, disguised: false });
 
+    section("Heroes", CLASS_IDS.flatMap(id => [[CLASSES[id].name, playerSprite({ weapon: CLASSES[id].weapon >= 0 ? WEAPONS[CLASSES[id].weapon] : null, armor: null, start: { cls: id } })], [`${CLASSES[id].name} + chain + spear`, playerSprite({ weapon: WEAPONS[2], armor: ARMORS[2], start: { cls: id } })], [`${CLASSES[id].name} + plate`, playerSprite({ weapon: WEAPONS[4], armor: ARMORS[3], start: { cls: id } })], [`${CLASSES[id].name} ghost`, ghostSprite(id, -1, -1)]]));
     section("Hero: weapons", [["bare", playerSprite({ weapon: null, armor: null })],
       ...WEAPONS.map(w => [w.name, playerSprite({ weapon: w, armor: null })])]);
     section("Hero: armor", ARMORS.map(a => [a.name, playerSprite({ weapon: null, armor: a })]));
@@ -63,7 +65,7 @@
       ["key", spriteCanvas("key")], ["ember", spriteCanvas("ember")], ["waystone", spriteCanvas("waystone")], ["echoes", spriteCanvas("echoes")],
     ]);
     section("Relics (tier I / II / III)", RELIC_IDS.flatMap(id => [1, 2, 3].map(t => [`${RELICS[id].name} ${"I".repeat(t)}`, relicSprite(id, t)])));
-    section("Ghosts & graves", [["ghost", ghostSprite(-1, -1)], ["ghost, sword", ghostSprite(1, 2)], ["ghost, kingsbane", ghostSprite(4, 4)], ["grave", spriteCanvas("grave")]]);
+    section("Ghosts & graves", [["ghost", ghostSprite("wanderer", -1, -1)], ["ghost, sword", ghostSprite("wanderer", 1, 2)], ["ghost, kingsbane", ghostSprite("wanderer", 4, 4)], ["grave", spriteCanvas("grave")]]);
     section("Traps", [["spikes", spriteCanvas("spikes")], ["pit", spriteCanvas("pit")], ["alarm", spriteCanvas("alarm")], ["stairs", spriteCanvas("stairs")]]);
   </script>
 </body>

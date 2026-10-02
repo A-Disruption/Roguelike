@@ -1,11 +1,12 @@
 import { Rng, hashStr } from "./rng.ts";
 import { RELICS, RELIC_IDS, TIER_NAMES, type RelicId } from "./relics.ts";
+import { CLASS_IDS, classOf, type ClassId } from "./classes.ts";
 
 /* ============================ constants ============================ */
 
 /* Bump whenever a change would make old seeds/replays play out differently.
    Runs only compare (and ghosts only replay) between matching rules versions. */
-export const RULES_VERSION = 2;
+export const RULES_VERSION = 3;
 
 export const MW = 31, MH = 29;          // map size
 export const VW = 11, VH = 13;          // viewport in tiles
@@ -167,7 +168,12 @@ export type RunMode = "free" | "daily";
 
 /* The hero's stats at the start of a run. Daily runs always use the base hero
    so everyone competes on equal footing; free runs include echo upgrades. */
-export type StartStats = { maxHp: number; atk: number; def: number; sight: number; tonics: number; greed: number };
+export type StartStats = {
+  cls: ClassId;
+  maxHp: number; atk: number; def: number; sight: number; tonics: number; greed: number;
+  embers: number; waystones: number; weapon: number;       // weapon: index into WEAPONS, -1 for none
+  relics: Partial<Record<RelicId, number>>;               // relic powers the hero starts with
+};
 
 export type Game = {
   /* identity: with these and `actions`, the whole run can be replayed */
@@ -192,13 +198,19 @@ export type Game = {
   relics: Partial<Record<RelicId, number>>; // relic -> tier
   killsSinceEmber: number;
   perils: number;        // perilous stairs taken
+  wardens: number;       // wardens slain this run (for unlocks)
+  chests: number;        // chests opened this run (for unlocks)
   level: number; xp: number; next: number;
   echoes: number; greed: number; kills: number; turns: number;
   log: string[];
   dead: boolean; path: Pt[] | null;
 };
 
-export type Meta = { echoes: number; best: number; runs: number; kills: number; up: Record<string, number> };
+export type Meta = {
+  echoes: number; best: number; runs: number; kills: number; up: Record<string, number>;
+  wardens: number; chests: number;  // lifetime counters that unlock heroes
+  cls: ClassId;                     // hero picked for the next free run
+};
 
 /* ============================ helpers ============================ */
 
@@ -522,19 +534,36 @@ export function bfsPath(g: Game, tx: number, ty: number): Pt[] | null {
 
 /* ============================ starting a run ============================ */
 
-export const freshMeta = (): Meta => ({ echoes: 0, best: 0, runs: 0, kills: 0, up: {} });
+export const freshMeta = (): Meta => ({ echoes: 0, best: 0, runs: 0, kills: 0, up: {}, wardens: 0, chests: 0, cls: "wanderer" });
 
-export function startStats(meta: Meta): StartStats {
+/* the hero's opening stats: the class, plus echo upgrades (daily runs pass a fresh Meta, so no upgrades) */
+export function startStats(meta: Meta, cls: ClassId): StartStats {
   const u = meta.up || {};
+  const c = classOf(cls);
   return {
-    maxHp: 32 + 7 * (u.vigor || 0),
-    atk: 5 + (u.edge || 0),
-    def: 0 + (u.hide || 0),
-    sight: 6 + (u.lantern || 0),
-    tonics: 1 + (u.satchel || 0),
+    cls,
+    maxHp: c.hp + 7 * (u.vigor || 0),
+    atk: c.atk + (u.edge || 0),
+    def: c.def + (u.hide || 0),
+    sight: c.sight + (u.lantern || 0),
+    tonics: c.tonics + (u.satchel || 0),
     greed: 1 + 0.2 * (u.greed || 0),
+    embers: c.embers, waystones: c.waystones, weapon: c.weapon,
+    relics: { ...c.relics },
   };
 }
+
+/* older saves and records didn't store a class or kit */
+export const normalizeStart = (st: Partial<StartStats> & Pick<StartStats, "maxHp" | "atk" | "def" | "sight" | "tonics" | "greed">): StartStats => ({
+  // same key order as startStats(), so saved records stay byte-for-byte stable
+  cls: st.cls ?? "wanderer",
+  maxHp: st.maxHp, atk: st.atk, def: st.def, sight: st.sight, tonics: st.tonics, greed: st.greed,
+  embers: st.embers ?? 0, waystones: st.waystones ?? 0, weapon: st.weapon ?? -1,
+  relics: { ...(st.relics ?? {}) },
+});
+
+/* everyone gets the same hero in the daily, picked by the day's seed */
+export const dailyClass = (day: string): ClassId => CLASS_IDS[hashStr(`hero:${day}`) % CLASS_IDS.length];
 
 /* the daily seed: the same for everyone on the same UTC day and rules version */
 export const dailySeed = (day: string) => hashStr(`daily:${day}:rules${RULES_VERSION}`);
@@ -561,12 +590,12 @@ export function newRun(s: RunSetup): Game {
     seen: new Uint8Array(MW * MH), vis: new Set(),
     p: { x: pop.start.x, y: pop.start.y },
     hp: s.start.maxHp, maxHp: s.start.maxHp, atk: s.start.atk, def: s.start.def, sight: s.start.sight,
-    weapon: null, armor: null,
-    inv: { tonic: s.start.tonics, ember: 0, waystone: 0, key: 0 },
+    weapon: s.start.weapon >= 0 ? { ...WEAPONS[s.start.weapon] } : null, armor: null,
+    inv: { tonic: s.start.tonics, ember: s.start.embers, waystone: s.start.waystones, key: 0 },
     potions: POTION_COLORS.map(() => 0),
     potionMap: pr.shuffle(POTION_EFFECTS.map((_, i) => i)),
     known: POTION_EFFECTS.map(() => false),
-    hidden: 0, relics: {}, killsSinceEmber: 0, perils: 0,
+    hidden: 0, relics: { ...s.start.relics }, killsSinceEmber: 0, perils: 0, wardens: 0, chests: 0,
     level: 1, xp: 0, next: 12,
     echoes: 0, greed: s.start.greed, kills: 0, turns: 0,
     log: [s.mode === "daily"
@@ -574,6 +603,8 @@ export function newRun(s: RunSetup): Game {
       : "You wake at the mouth of the depths. Something below is still burning."],
     dead: false, path: null,
   };
+  const knows = classOf(s.start.cls).knowsPotion;
+  if (knows) g.known[POTION_EFFECTS.findIndex(e => e.k === knows)] = true;
   g.vis = computeFov(g);
   return g;
 }
@@ -674,7 +705,9 @@ function killMon(g: Game, m: Mon) {
     for (let i = 0; i < 2; i++) dropNear(g, m.x, m.y, rollItem(g.rng, g.depth, 1), g.rng);
     say(g, "It coughs up what it swallowed.");
   }
+  if (m.kind === "mimic") g.chests += 1;
   if (m.boss) {
+    g.wardens += 1;
     dropNear(g, m.x, m.y, rollRelic(g.rng, g.depth, 2), g.rng);
     say(g, "Something precious glints where the warden fell.");
   }
@@ -856,6 +889,7 @@ function triggerTrap(g: Game, flash?: Flash) {
 
 function openChest(g: Game, chest: Item) {
   g.items = g.items.filter(i => i !== chest);
+  g.chests += 1;
   const r = new Rng(chest.seed ?? g.rng.u32());
   const n = 2 + (r.chance(0.3) ? 1 : 0);
   for (let i = 0; i < n; i++) {
@@ -983,7 +1017,7 @@ export function burnEmber(g: Game, flash: Flash) {
   for (const m of targets) {
     if (m.disguised) revealMimic(g, m);
     m.alerted = true;
-    const d = g.rng.range(9, 15) + g.depth;
+    const d = Math.round((g.rng.range(9, 15) + g.depth) * classOf(g.start.cls).emberMul);
     m.hp -= d;
     flash(idx(m.x, m.y), "hit");
     if (m.hp <= 0) killMon(g, m);
@@ -1105,6 +1139,7 @@ export type SavedRun = {
   md?: RunMode; dy?: string | null; sd?: number; rs?: number; fk?: string;
   st?: StartStats; sa?: number; rk?: number; ac?: string; rp?: number;
   rl?: Partial<Record<RelicId, number>>; hz?: [number, number, number, number][]; ks?: number; pr?: number;
+  cc?: [number, number];
 };
 
 const itemNum = (i: Item) =>
@@ -1139,6 +1174,7 @@ export function serializeRun(g: Game): SavedRun {
     md: g.mode, dy: g.day, sd: g.seed, rs: g.rng.s, fk: g.floorKey,
     st: g.start, sa: g.startedAt, rk: g.ranked ? 1 : 0, ac: g.actions.join(","), rp: g.replayable ? 1 : 0,
     rl: { ...g.relics }, hz: g.hazards.map(h => [h.x, h.y, h.dmg, h.turns]), ks: g.killsSinceEmber, pr: g.perils,
+    cc: [g.wardens, g.chests],
   };
 }
 
@@ -1151,7 +1187,7 @@ export function deserializeRun(o: SavedRun): Game {
   const pr = new Rng(hashStr(`${seed}:potions`));
   const g: Game = {
     mode: o.md ?? "free", day: o.dy ?? null, seed,
-    start: o.st ?? { maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4], tonics: 0, greed: o.e[1] },
+    start: normalizeStart(o.st ?? { maxHp: o.h[1], atk: o.h[2], def: o.h[3], sight: o.h[4], tonics: 0, greed: o.e[1] }),
     startedAt: o.sa ?? Date.now(), ranked: o.rk === 1,
     actions: o.ac ? o.ac.split(",") : [], replayable: !legacy && o.rp !== 0,
     rng: new Rng(o.rs ?? hashStr(`${seed}:run:${o.e[3]}`)),
@@ -1190,10 +1226,11 @@ export function deserializeRun(o: SavedRun): Game {
     relics: { ...(o.rl ?? {}) },
     killsSinceEmber: o.ks ?? 0,
     perils: o.pr ?? 0,
+    wardens: o.cc?.[0] ?? 0, chests: o.cc?.[1] ?? 0,
     level: o.x[0], xp: o.x[1], next: o.x[2],
     echoes: o.e[0], greed: o.e[1], kills: o.e[2], turns: o.e[3],
     log: o.l?.length ? o.l : ["You come back to yourself in the dark."],
-    dead: false, path: null,
+    dead: o.h[0] <= 0, path: null,     // a hero saved at 0 hp stays dead
   };
   if (g.grid.length !== MW * MH || g.seen.length !== MW * MH) throw new Error("save has the wrong map size");
   g.vis = computeFov(g);

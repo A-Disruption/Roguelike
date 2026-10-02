@@ -1,7 +1,7 @@
 import { useEffect, useRef, useReducer, useState, useCallback, useMemo, type MouseEvent } from "react";
 import {
-  C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
-  newRun, startStats, freshMeta, dailySeed, applyAction, stepAction, canReach, bfsPath, potionLabel,
+  C, MW, MH, VW, VH, STAIRS, STAIRS_RISK, UPGRADES, WEAPONS, POTION_COLORS, POTION_EFFECTS, idx, inB, say, totalAtk, totalDef,
+  newRun, startStats, freshMeta, dailySeed, dailyClass, applyAction, stepAction, canReach, bfsPath, potionLabel,
   relicLabel, relicBlurb, scoreOf,
   type Game, type Meta, type Upgrade, type Flash, type RunMode,
 } from "./game/core";
@@ -17,6 +17,7 @@ import {
 import { RULES_VERSION } from "./game/core";
 import { randomSeed } from "./game/rng";
 import { RELICS, TIER_NAMES, type RelicId } from "./game/relics";
+import { CLASSES, CLASS_IDS, isUnlocked, classOf, type ClassId } from "./game/classes";
 import { Shell, SpriteIcon, ActBtn, linkBtn, btn, act3, textArea, sectionTitle, Stat, Row } from "./ui/bits";
 import { DailyCard } from "./ui/Daily";
 
@@ -85,6 +86,37 @@ function RelicStrip({ g, open, onToggle }: { g: Game; open: boolean; onToggle: (
   );
 }
 
+/* ============================ hero picker ============================ */
+
+function HeroPicker({ meta, onPick }: { meta: Meta; onPick: (id: ClassId) => void }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, margin: "0 0 14px" }}>
+      {CLASS_IDS.map(id => {
+        const c = CLASSES[id];
+        const open = isUnlocked(id, meta);
+        const picked = meta.cls === id;
+        return (
+          <button key={id} className="lb-btn" disabled={!open} onClick={() => onPick(id)} aria-pressed={picked}
+            style={{
+              font: "inherit", textAlign: "left", cursor: open ? "pointer" : "default", borderRadius: 4,
+              padding: "9px 10px", background: picked ? "#2A1E12" : "transparent", color: C.bone,
+              border: `1px solid ${picked ? C.ember : C.memWall}`, opacity: open ? 1 : 0.55,
+              gridColumn: id === "wanderer" ? "1 / -1" : undefined,
+            }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <SpriteIcon src={playerSprite({ weapon: c.weapon >= 0 ? WEAPONS[c.weapon] : null, armor: null, start: { cls: id } })} size={26} />
+              <span style={{ fontSize: 15.5, fontWeight: 600 }}>{c.name}</span>
+            </span>
+            <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.35 }}>
+              {open ? c.blurb : `Locked: ${c.unlock!.text} (${c.unlock!.progress(meta)})`}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ============================ backup panel ============================ */
 
 function Backup({ onRestored }: { onRestored: () => void }) {
@@ -140,7 +172,7 @@ function Backup({ onRestored }: { onRestored: () => void }) {
 type SaveState = "idle" | "saved" | "failed";
 type Summary = {
   mode: RunMode; day: string | null; depth: number; kills: number; earned: number; level: number;
-  score: number; record: boolean; ranked: boolean; abandoned: boolean;
+  score: number; record: boolean; ranked: boolean; abandoned: boolean; unlocked: ClassId[];
 };
 
 export default function LampblackDepths() {
@@ -262,7 +294,7 @@ export default function LampblackDepths() {
     return ghostsFor(g.day).flatMap(gh => {
       const { frame, done, died } = ghostAt(gh, g.turns);
       if (!frame || frame.fk !== g.floorKey) return [];
-      return [{ x: frame.x, y: frame.y, wt: frame.wt, at: frame.at, dead: done && died }];
+      return [{ x: frame.x, y: frame.y, cls: frame.cls ?? "wanderer", wt: frame.wt, at: frame.at, dead: done && died }];
     });
   };
 
@@ -292,14 +324,16 @@ export default function LampblackDepths() {
   const finishRun = useCallback((g: Game, abandoned = false) => {
     const m = metaRef.current;
     const earned = Math.round(g.echoes * g.greed);
-    setMeta({
+    const nm: Meta = {
       ...m, echoes: m.echoes + earned, best: Math.max(m.best, g.depth),
-      runs: m.runs + 1, kills: m.kills + g.kills,
-    });
+      runs: m.runs + 1, kills: m.kills + g.kills, wardens: m.wardens + g.wardens, chests: m.chests + g.chests,
+    };
+    const unlocked = CLASS_IDS.filter(id => !isUnlocked(id, m) && isUnlocked(id, nm));
+    setMeta(nm);
     if (g.replayable) setRecords(addRecord(makeRecord(g, runId(g), loadProfile(), __APP_VERSION__, true)));
     setSummary({
       mode: g.mode, day: g.day, depth: g.depth, kills: g.kills, earned, level: g.level,
-      score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned,
+      score: scoreOf(g), record: g.depth > m.best, ranked: g.ranked, abandoned, unlocked,
     });
     clearRun(g.mode);
     runs.current[g.mode] = null;
@@ -373,7 +407,8 @@ export default function LampblackDepths() {
   const startFree = () => {
     if (runs.current.free && !confirm("Abandon this run? Echoes from it will be lost.")) return;
     enter(newRun({
-      mode: "free", seed: randomSeed(), day: null, start: startStats(metaRef.current), ranked: false, startedAt: Date.now(),
+      mode: "free", seed: randomSeed(), day: null, ranked: false, startedAt: Date.now(),
+      start: startStats(metaRef.current, isUnlocked(metaRef.current.cls, metaRef.current) ? metaRef.current.cls : "wanderer"),
     }));
   };
 
@@ -383,7 +418,7 @@ export default function LampblackDepths() {
     const day = todayUTC();
     const ranked = !records.some(r => r.mode === "daily" && r.day === day);
     enter(newRun({
-      mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta()), ranked, startedAt: Date.now(),
+      mode: "daily", seed: dailySeed(day), day, start: startStats(freshMeta(), dailyClass(day)), ranked, startedAt: Date.now(),
     }));
   };
 
@@ -464,7 +499,7 @@ export default function LampblackDepths() {
       <Shell>
         <div style={{ flex: 1, overflowY: "auto", padding: "26px 20px 24px", maxWidth: 520, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <SpriteIcon name="player" size={28} />
+            <SpriteIcon name={classOf(meta.cls).sprite} size={28} />
             <h1 style={{ margin: 0, fontSize: 29, fontWeight: 600, letterSpacing: "-0.01em" }}>The Lampblack Depths</h1>
           </div>
           <p style={{ color: C.dim, marginTop: 8, marginBottom: 20, fontSize: 15, lineHeight: 1.5, maxWidth: "46ch" }}>
@@ -500,7 +535,10 @@ export default function LampblackDepths() {
             <Stat label="kills" value={meta.kills} />
           </div>
 
-          <div style={{ display: "flex", gap: 10, margin: "18px 0 26px" }}>
+          <h3 style={{ ...sectionTitle, margin: "16px 0 8px" }}>Hero for your next descent</h3>
+          <HeroPicker meta={meta} onPick={cls => setMeta({ ...metaRef.current, cls })} />
+
+          <div style={{ display: "flex", gap: 10, margin: "4px 0 26px" }}>
             {free && (
               <button className="lb-btn" onClick={() => enter(free)} style={btn(C.ember, true)}>
                 Return to depth {free.depth}
@@ -598,6 +636,14 @@ export default function LampblackDepths() {
           <Row k="killed" v={summary.kills} />
           <Row k="level" v={summary.level} />
           <Row k="echoes carried out" v={summary.earned} color={C.verd} />
+          {summary.unlocked.map(id => (
+            <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, padding: "10px 12px",
+                                   border: `1px solid ${C.ember}`, borderRadius: 4, background: "#2A1E12" }}>
+              <SpriteIcon name={CLASSES[id].sprite} size={32} />
+              <span><b style={{ color: C.ember }}>New hero unlocked: {CLASSES[id].name}!</b>
+                <span style={{ display: "block", fontSize: 13, color: C.dim }}>{CLASSES[id].blurb}</span></span>
+            </div>
+          ))}
           <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
             {daily
               ? <button className="lb-btn" onClick={() => setScreen("hub")} style={btn(C.ember, true)}>See the scoreboard</button>

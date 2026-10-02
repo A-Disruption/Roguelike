@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { C, type Game } from "../game/core";
+import { C, dailyClass, type Game } from "../game/core";
+import { CLASSES } from "../game/classes";
 import { resultOf, prettyDay, formatCountdown, msUntilNextDay, type Ghost, type RunRecord } from "../game/replay";
-import { btn, act3, linkBtn, textArea, sectionTitle } from "./bits";
+import { btn, act3, linkBtn, textArea, sectionTitle, SpriteIcon } from "./bits";
 
 /* The daily dungeon card on the main screen: play button, countdown,
    today's scoreboard and the share / add-a-friend panel. */
@@ -83,9 +84,14 @@ export function DailyCard(props: {
         <h2 style={{ margin: 0, fontSize: 19, fontWeight: 600 }}>Daily dungeon · {prettyDay(day)}</h2>
         <span className="lb-mono" style={{ fontSize: 11.5, color: C.dim }}>new in {formatCountdown(msUntilNextDay(now))}</span>
       </div>
-      <p style={{ margin: "6px 0 12px", fontSize: 13.5, color: C.dim, lineHeight: 1.45 }}>
-        Same map for everyone today, and everyone starts as the plain hero. Your first try goes on the board.
+      <p style={{ margin: "6px 0 10px", fontSize: 13.5, color: C.dim, lineHeight: 1.45 }}>
+        Same map and same hero for everyone today, no upgrades. Your first try goes on the board.
       </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 12px" }}>
+        <SpriteIcon name={CLASSES[dailyClass(day)].sprite} size={30} />
+        <span style={{ fontSize: 14 }}>Today's hero: <b style={{ color: C.ember }}>{CLASSES[dailyClass(day)].name}</b>
+          <span style={{ display: "block", fontSize: 12, color: C.dim }}>{CLASSES[dailyClass(day)].blurb}</span></span>
+      </div>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: C.dim, marginBottom: 12 }}>
         Your name

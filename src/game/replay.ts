@@ -1,5 +1,5 @@
 import {
-  newRun, applyAction, scoreOf, weaponTier, armorTier, RULES_VERSION,
+  newRun, applyAction, scoreOf, weaponTier, armorTier, normalizeStart, RULES_VERSION,
   type Game, type RunMode, type StartStats,
 } from "./core.ts";
 
@@ -53,7 +53,7 @@ export function makeRecord(g: Game, id: string, player: Profile, app: string, fi
 
 /* Replays a record from scratch. onStep sees the game after the start and after every action. */
 export function replayRecord(rec: RunRecord, onStep?: (g: Game) => void): Game {
-  const g = newRun({ mode: rec.mode, seed: rec.seed, day: rec.day, start: rec.start, ranked: rec.ranked, startedAt: rec.startedAt });
+  const g = newRun({ mode: rec.mode, seed: rec.seed, day: rec.day, start: normalizeStart(rec.start), ranked: rec.ranked, startedAt: rec.startedAt });
   const noop = () => {};
   onStep?.(g);
   for (const a of rec.actions ? rec.actions.split(",") : []) {
@@ -74,14 +74,14 @@ export function sameResult(a: RunResult, b: RunResult) {
    so if you and the ghost are on the same floor at the same turn, its position
    is meaningful on your map. */
 
-export type GhostFrame = { fk: string; x: number; y: number; wt: number; at: number; hp: number; maxHp: number };
+export type GhostFrame = { fk: string; x: number; y: number; cls: string; wt: number; at: number; hp: number; maxHp: number };
 export type Ghost = { rec: RunRecord; frames: GhostFrame[]; verified: boolean };
 
 export function buildGhost(rec: RunRecord): Ghost {
   const frames: GhostFrame[] = [];
   const g = replayRecord(rec, gg => {
     frames[gg.turns] = {
-      fk: gg.floorKey, x: gg.p.x, y: gg.p.y, hp: gg.hp, maxHp: gg.maxHp,
+      fk: gg.floorKey, x: gg.p.x, y: gg.p.y, hp: gg.hp, maxHp: gg.maxHp, cls: gg.start.cls,
       wt: gg.weapon ? weaponTier(gg.weapon.name) : -1,
       at: gg.armor ? armorTier(gg.armor.name) : -1,
     };

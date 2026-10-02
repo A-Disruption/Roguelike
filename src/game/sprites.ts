@@ -3,6 +3,7 @@ import {
   type Game, type Mon, type Item,
 } from "./core.ts";
 import { TIER_COLORS, type RelicId } from "./relics.ts";
+import { classOf } from "./classes.ts";
 
 /* ============================ sprites ============================ */
 /* 8x8 pixel art. '.' is transparent; other chars index the sprite's palette. */
@@ -322,6 +323,23 @@ export const SPRITES: Record<string, SpriteDef> = {
       "........",
     ],
   },
+  /* ---- heroes (same palette letters as the wanderer so armor and weapons layer the same way) ---- */
+  ranger: {
+    pal: { c:"#2F4A2C", d:"#4E7A46", f:"#D9B48A", k:"#12161E", w:"#A87440", s:"#D8D2BE" },
+    rows: ["..cccc.w",".cddddsw",".cffffsw",".cfkkfsw","..ddddsw",".cddddsw",".cc..ccw",".c....c."],
+  },
+  mage: {
+    pal: { c:"#3A2450", d:"#6A4A9A", f:"#D9B48A", k:"#12161E", h:"#4E3A6E", e:"#E9A13B", y:"#B08A2E" },
+    rows: ["...hh...","..hhhh..",".hhhhhh.",".cffffce",".cfkkfcy",".cddddcy",".ddddddy",".dd..ddy"],
+  },
+  knight: {
+    pal: { c:"#5A6370", d:"#8A94A3", f:"#6A737D", k:"#E6DCC9", e:"#C04A3B", g:"#D4C36A" },
+    rows: ["..cccc..",".cddddc.",".cffffc.",".cfkkfc.","..dddd..",".cddddee",".cc..ceg",".c....ee"],
+  },
+  rogue: {
+    pal: { c:"#1E2026", d:"#2E323C", f:"#D9B48A", k:"#12161E", r:"#C04A3B", e:"#C9CFD6" },
+    rows: ["..cccc..",".cccccc.",".cffffc.",".cfkkfc.","..rrrr..",".cddddc.",".cc..cce",".c....ce"],
+  },
   /* ---- relics (tier shown by colored corners) ---- */
   fang: {
     pal: { w:"#E6DCC9", r:"#C04A3B", d:"#9A9484" },
@@ -461,7 +479,8 @@ const TORSO: Record<string, [number, number][]> = {
   ogre:     [[1,5],[2,5],[3,5],[4,5],[5,5],[6,5]],
 };
 
-export function playerSprite(g: Pick<Game, "weapon" | "armor">) {
+export function playerSprite(g: Pick<Game, "weapon" | "armor"> & { start?: { cls?: string } }) {
+  const base = classOf(g.start?.cls).sprite;
   const wt = g.weapon ? weaponTier(g.weapon.name) : -1;
   const at = g.armor ? armorTier(g.armor.name) : -1;
   let pal: Record<string, string> = {};
@@ -471,13 +490,14 @@ export function playerSprite(g: Pick<Game, "weapon" | "armor">) {
     // the heavy armors come with a full helm and glowing eye slits
     if (at >= 3) { pal.f = a.main; pal.k = a.light; }
   }
-  return compose(`player|${wt}|${at}`, "player", pal, wt >= 0 ? WEAPON_PX[wt] : []);
+  return compose(`${base}|${wt}|${at}`, base, pal, wt >= 0 ? WEAPON_PX[wt] : []);
 }
 
 /* friends' ghosts: the hero in spectral teal, still showing their gear */
-export function ghostSprite(wt: number, at: number) {
-  return compose(`ghosthero|${wt}|${at}`, "player",
-    { c:"#3F7F86", d:"#6FC4C8", f:"#CFF3F2", k:"#12161E", e:"#BFF3F0" },
+export function ghostSprite(cls: string, wt: number, at: number) {
+  const base = classOf(cls).sprite;
+  return compose(`ghost|${base}|${wt}|${at}`, base,
+    { c:"#3F7F86", d:"#6FC4C8", f:"#CFF3F2", k:"#12161E", e:"#BFF3F0", h:"#3F7F86", r:"#6FC4C8", w:"#BFF3F0", s:"#BFF3F0", y:"#BFF3F0", g:"#BFF3F0" },
     wt >= 0 ? WEAPON_PX[wt].map(([x, y]) => [x, y, "#BFF3F0"] as Px) : []);
 }
 
@@ -524,7 +544,7 @@ const FLASH_COLORS: Record<string, string> = {
   arrow: "rgba(233,161,59,0.35)",
 };
 
-export type GhostMark = { x: number; y: number; wt: number; at: number; dead: boolean };
+export type GhostMark = { x: number; y: number; cls: string; wt: number; at: number; dead: boolean };
 
 export function drawMap(
   ctx: CanvasRenderingContext2D, g: Game, ts: number, camX: number, camY: number,
@@ -592,7 +612,7 @@ export function drawMap(
       for (const gh of ghosts) {
         if (gh.x !== x || gh.y !== y) continue;
         if (gh.dead) blit(spriteCanvas("grave"), px, py, vis ? 0.9 : 0.4);
-        else blit(ghostSprite(gh.wt, gh.at), px, py, 0.45);
+        else blit(ghostSprite(gh.cls, gh.wt, gh.at), px, py, 0.45);
       }
 
       if (x === g.p.x && y === g.p.y) blit(playerSprite(g), px, py, g.hidden > 0 ? 0.45 : 1);
